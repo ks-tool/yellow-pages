@@ -1,0 +1,3 @@
+clusterName: hadoop
+datacenter: dc1
+seed: true
