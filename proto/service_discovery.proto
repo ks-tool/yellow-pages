@@ -8,6 +8,8 @@ message Agent {
   string id = 1;
   string address = 2;
   int32 port = 3;
+  string datacenter = 4;
+  map<string, string> metadata = 5;
 }
 
 message Endpoint {

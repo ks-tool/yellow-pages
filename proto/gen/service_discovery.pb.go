@@ -26,6 +26,8 @@ type Agent struct {
 	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
 	Address       string                 `protobuf:"bytes,2,opt,name=address,proto3" json:"address,omitempty"`
 	Port          int32                  `protobuf:"varint,3,opt,name=port,proto3" json:"port,omitempty"`
+	Datacenter    string                 `protobuf:"bytes,4,opt,name=datacenter,proto3" json:"datacenter,omitempty"`
+	Metadata      map[string]string      `protobuf:"bytes,5,rep,name=metadata,proto3" json:"metadata,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -79,6 +81,20 @@ func (x *Agent) GetPort() int32 {
 		return x.Port
 	}
 	return 0
+}
+
+func (x *Agent) GetDatacenter() string {
+	if x != nil {
+		return x.Datacenter
+	}
+	return ""
+}
+
+func (x *Agent) GetMetadata() map[string]string {
+	if x != nil {
+		return x.Metadata
+	}
+	return nil
 }
 
 type Endpoint struct {
@@ -969,11 +985,18 @@ var File_service_discovery_proto protoreflect.FileDescriptor
 
 const file_service_discovery_proto_rawDesc = "" +
 	"\n" +
-	"\x17service_discovery.proto\x12\tdiscovery\"E\n" +
+	"\x17service_discovery.proto\x12\tdiscovery\"\xde\x01\n" +
 	"\x05Agent\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x18\n" +
 	"\aaddress\x18\x02 \x01(\tR\aaddress\x12\x12\n" +
-	"\x04port\x18\x03 \x01(\x05R\x04port\"\xf8\x01\n" +
+	"\x04port\x18\x03 \x01(\x05R\x04port\x12\x1e\n" +
+	"\n" +
+	"datacenter\x18\x04 \x01(\tR\n" +
+	"datacenter\x12:\n" +
+	"\bmetadata\x18\x05 \x03(\v2\x1e.discovery.Agent.MetadataEntryR\bmetadata\x1a;\n" +
+	"\rMetadataEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xf8\x01\n" +
 	"\bEndpoint\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1a\n" +
 	"\bprotocol\x18\x02 \x01(\tR\bprotocol\x12\x18\n" +
@@ -1056,7 +1079,7 @@ func file_service_discovery_proto_rawDescGZIP() []byte {
 	return file_service_discovery_proto_rawDescData
 }
 
-var file_service_discovery_proto_msgTypes = make([]protoimpl.MessageInfo, 21)
+var file_service_discovery_proto_msgTypes = make([]protoimpl.MessageInfo, 22)
 var file_service_discovery_proto_goTypes = []any{
 	(*Agent)(nil),                    // 0: discovery.Agent
 	(*Endpoint)(nil),                 // 1: discovery.Endpoint
@@ -1076,40 +1099,42 @@ var file_service_discovery_proto_goTypes = []any{
 	(*GetRemoteServiceResponse)(nil), // 15: discovery.GetRemoteServiceResponse
 	(*GetEndpointsRequest)(nil),      // 16: discovery.GetEndpointsRequest
 	(*GetEndpointsResponse)(nil),     // 17: discovery.GetEndpointsResponse
-	nil,                              // 18: discovery.Endpoint.MetadataEntry
-	nil,                              // 19: discovery.Service.MetadataEntry
-	nil,                              // 20: discovery.GetServiceAgentsRequest.FiltersEntry
+	nil,                              // 18: discovery.Agent.MetadataEntry
+	nil,                              // 19: discovery.Endpoint.MetadataEntry
+	nil,                              // 20: discovery.Service.MetadataEntry
+	nil,                              // 21: discovery.GetServiceAgentsRequest.FiltersEntry
 }
 var file_service_discovery_proto_depIdxs = []int32{
-	18, // 0: discovery.Endpoint.metadata:type_name -> discovery.Endpoint.MetadataEntry
-	1,  // 1: discovery.Service.endpoints:type_name -> discovery.Endpoint
-	19, // 2: discovery.Service.metadata:type_name -> discovery.Service.MetadataEntry
-	0,  // 3: discovery.AgentInfo.agent:type_name -> discovery.Agent
-	0,  // 4: discovery.GetSeedsResponse.seeds:type_name -> discovery.Agent
-	0,  // 5: discovery.RegisterAgentRequest.agent:type_name -> discovery.Agent
-	2,  // 6: discovery.RegisterAgentRequest.services:type_name -> discovery.Service
-	2,  // 7: discovery.HeartbeatRequest.services:type_name -> discovery.Service
-	20, // 8: discovery.GetServiceAgentsRequest.filters:type_name -> discovery.GetServiceAgentsRequest.FiltersEntry
-	3,  // 9: discovery.GetServiceAgentsResponse.agents:type_name -> discovery.AgentInfo
-	3,  // 10: discovery.GetRemoteServiceResponse.agents:type_name -> discovery.AgentInfo
-	1,  // 11: discovery.GetEndpointsResponse.endpoints:type_name -> discovery.Endpoint
-	16, // 12: discovery.AgentService.GetEndpoints:input_type -> discovery.GetEndpointsRequest
-	8,  // 13: discovery.AgentService.Heartbeat:input_type -> discovery.HeartbeatRequest
-	6,  // 14: discovery.AgentService.RegisterAgent:input_type -> discovery.RegisterAgentRequest
-	10, // 15: discovery.AgentService.DeregisterAgent:input_type -> discovery.DeregisterAgentRequest
-	12, // 16: discovery.AgentService.GetServiceAgents:input_type -> discovery.GetServiceAgentsRequest
-	14, // 17: discovery.AgentService.GetRemoteService:input_type -> discovery.GetRemoteServiceRequest
-	17, // 18: discovery.AgentService.GetEndpoints:output_type -> discovery.GetEndpointsResponse
-	9,  // 19: discovery.AgentService.Heartbeat:output_type -> discovery.HeartbeatResponse
-	7,  // 20: discovery.AgentService.RegisterAgent:output_type -> discovery.RegisterAgentResponse
-	11, // 21: discovery.AgentService.DeregisterAgent:output_type -> discovery.DeregisterAgentResponse
-	13, // 22: discovery.AgentService.GetServiceAgents:output_type -> discovery.GetServiceAgentsResponse
-	15, // 23: discovery.AgentService.GetRemoteService:output_type -> discovery.GetRemoteServiceResponse
-	18, // [18:24] is the sub-list for method output_type
-	12, // [12:18] is the sub-list for method input_type
-	12, // [12:12] is the sub-list for extension type_name
-	12, // [12:12] is the sub-list for extension extendee
-	0,  // [0:12] is the sub-list for field type_name
+	18, // 0: discovery.Agent.metadata:type_name -> discovery.Agent.MetadataEntry
+	19, // 1: discovery.Endpoint.metadata:type_name -> discovery.Endpoint.MetadataEntry
+	1,  // 2: discovery.Service.endpoints:type_name -> discovery.Endpoint
+	20, // 3: discovery.Service.metadata:type_name -> discovery.Service.MetadataEntry
+	0,  // 4: discovery.AgentInfo.agent:type_name -> discovery.Agent
+	0,  // 5: discovery.GetSeedsResponse.seeds:type_name -> discovery.Agent
+	0,  // 6: discovery.RegisterAgentRequest.agent:type_name -> discovery.Agent
+	2,  // 7: discovery.RegisterAgentRequest.services:type_name -> discovery.Service
+	2,  // 8: discovery.HeartbeatRequest.services:type_name -> discovery.Service
+	21, // 9: discovery.GetServiceAgentsRequest.filters:type_name -> discovery.GetServiceAgentsRequest.FiltersEntry
+	3,  // 10: discovery.GetServiceAgentsResponse.agents:type_name -> discovery.AgentInfo
+	3,  // 11: discovery.GetRemoteServiceResponse.agents:type_name -> discovery.AgentInfo
+	1,  // 12: discovery.GetEndpointsResponse.endpoints:type_name -> discovery.Endpoint
+	16, // 13: discovery.AgentService.GetEndpoints:input_type -> discovery.GetEndpointsRequest
+	8,  // 14: discovery.AgentService.Heartbeat:input_type -> discovery.HeartbeatRequest
+	6,  // 15: discovery.AgentService.RegisterAgent:input_type -> discovery.RegisterAgentRequest
+	10, // 16: discovery.AgentService.DeregisterAgent:input_type -> discovery.DeregisterAgentRequest
+	12, // 17: discovery.AgentService.GetServiceAgents:input_type -> discovery.GetServiceAgentsRequest
+	14, // 18: discovery.AgentService.GetRemoteService:input_type -> discovery.GetRemoteServiceRequest
+	17, // 19: discovery.AgentService.GetEndpoints:output_type -> discovery.GetEndpointsResponse
+	9,  // 20: discovery.AgentService.Heartbeat:output_type -> discovery.HeartbeatResponse
+	7,  // 21: discovery.AgentService.RegisterAgent:output_type -> discovery.RegisterAgentResponse
+	11, // 22: discovery.AgentService.DeregisterAgent:output_type -> discovery.DeregisterAgentResponse
+	13, // 23: discovery.AgentService.GetServiceAgents:output_type -> discovery.GetServiceAgentsResponse
+	15, // 24: discovery.AgentService.GetRemoteService:output_type -> discovery.GetRemoteServiceResponse
+	19, // [19:25] is the sub-list for method output_type
+	13, // [13:19] is the sub-list for method input_type
+	13, // [13:13] is the sub-list for extension type_name
+	13, // [13:13] is the sub-list for extension extendee
+	0,  // [0:13] is the sub-list for field type_name
 }
 
 func init() { file_service_discovery_proto_init() }
@@ -1123,7 +1148,7 @@ func file_service_discovery_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_service_discovery_proto_rawDesc), len(file_service_discovery_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   21,
+			NumMessages:   22,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

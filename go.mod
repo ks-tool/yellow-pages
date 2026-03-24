@@ -4,6 +4,7 @@ go 1.26.1
 
 require (
 	github.com/spf13/cobra v1.10.2
+	github.com/uptrace/bunrouter v1.0.23
 	google.golang.org/grpc v1.79.3
 	google.golang.org/protobuf v1.36.11
 	gopkg.in/yaml.v3 v3.0.1
