@@ -14,18 +14,19 @@
  limitations under the License.
 */
 
-// Package transport is the seam that builds gRPC servers and client connections
-// with the configured security. M3 ships the trusted-L3 default (Insecure, no
-// transport security, explicitly documented); M4 plugs in TLS/mTLS via the
-// Credentials seam behind this same interface, so the server and seedclient code
-// never change. Interceptors and other per-call options are passed through.
+// Package transport builds the gRPC server and client side of every connection,
+// applying the security supplied by the internal/cred seam. Swapping the trusted-L3
+// default for TLS/mTLS is a cred/config choice; the server and seedclient code
+// that use a Transport never change. Interceptors and other per-call options are
+// passed through.
 package transport
 
 import (
 	"context"
 
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
+
+	"github.com/ks-tool/yellow-pages/internal/cred"
 )
 
 // Transport constructs the gRPC server and client side of every connection.
@@ -39,21 +40,22 @@ type Transport interface {
 	Dial(ctx context.Context, target string, opts ...grpc.DialOption) (*grpc.ClientConn, error)
 }
 
-// Insecure is the default trusted-L3 transport: no transport security on either
-// side. It suits the on-premise, network-restricted target and is explicitly
-// documented; turning on mTLS is an M4 config choice, not a code change.
-type Insecure struct{}
+// New returns a Transport that applies creds' security to servers and dials.
+func New(creds cred.Credentials) Transport { return secured{creds: creds} }
 
-// compile-time assertion that Insecure satisfies Transport.
-var _ Transport = Insecure{}
+// Insecure returns a Transport with no transport security (trusted-L3 default).
+func Insecure() Transport { return New(cred.Insecure()) }
 
-// NewServer builds an insecure gRPC server with the supplied options.
-func (Insecure) NewServer(opts ...grpc.ServerOption) *grpc.Server {
-	return grpc.NewServer(opts...)
+type secured struct{ creds cred.Credentials }
+
+// compile-time assertion that secured satisfies Transport.
+var _ Transport = secured{}
+
+func (s secured) NewServer(opts ...grpc.ServerOption) *grpc.Server {
+	return grpc.NewServer(append(s.creds.ServerOptions(), opts...)...)
 }
 
-// Dial creates an insecure client connection to target.
-func (Insecure) Dial(_ context.Context, target string, opts ...grpc.DialOption) (*grpc.ClientConn, error) {
-	all := append([]grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}, opts...)
+func (s secured) Dial(_ context.Context, target string, opts ...grpc.DialOption) (*grpc.ClientConn, error) {
+	all := append(s.creds.DialOptions(), opts...)
 	return grpc.NewClient(target, all...)
 }

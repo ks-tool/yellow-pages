@@ -80,6 +80,38 @@ func TestParse_JSONIsAccepted(t *testing.T) {
 	}
 }
 
+func TestParse_SecurityValid(t *testing.T) {
+	t.Parallel()
+
+	// ACL defaults to disabled when unset.
+	cfg, err := Parse([]byte("role: seed\ncluster:\n  name: prod\n"), ".yaml")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.ACL.Mode != "disabled" {
+		t.Errorf("acl.mode default = %q, want disabled", cfg.ACL.Mode)
+	}
+	if cfg.TLS.Enabled {
+		t.Error("tls should be disabled by default")
+	}
+
+	// A valid mTLS + enforce config parses.
+	src := `role: seed
+cluster:
+  name: prod
+tls:
+  enabled: true
+  cert_file: /etc/yp/cert.pem
+  key_file: /etc/yp/key.pem
+  ca_file: /etc/yp/ca.pem
+  mutual_tls: true
+acl:
+  mode: enforce`
+	if _, err := Parse([]byte(src), ".yaml"); err != nil {
+		t.Fatalf("valid mTLS+enforce config rejected: %v", err)
+	}
+}
+
 func TestParse_Errors(t *testing.T) {
 	t.Parallel()
 
@@ -113,6 +145,34 @@ cluster:
   name: prod
   discovery:
     update_interval: 5s`,
+		"tls enabled without cert": `role: seed
+cluster:
+  name: prod
+tls:
+  enabled: true`,
+		"mutual_tls without ca": `role: seed
+cluster:
+  name: prod
+tls:
+  enabled: true
+  cert_file: /c
+  key_file: /k
+  mutual_tls: true`,
+		"mutual_tls without tls": `role: seed
+cluster:
+  name: prod
+tls:
+  mutual_tls: true`,
+		"invalid acl mode": `role: seed
+cluster:
+  name: prod
+acl:
+  mode: strict`,
+		"enforce without identity source": `role: seed
+cluster:
+  name: prod
+acl:
+  mode: enforce`,
 		"empty": ``,
 	}
 

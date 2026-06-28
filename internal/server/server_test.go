@@ -42,7 +42,13 @@ func testLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard,
 // dial starts a Component over st on an ephemeral port and returns a client conn.
 func dial(t *testing.T, st store.Store) (*Component, *grpc.ClientConn) {
 	t.Helper()
-	comp := NewComponent("127.0.0.1:0", New(st, testLogger()), transport.Insecure{}, observability.Nop{}, testLogger())
+	comp := NewComponent(Options{
+		Addr:      "127.0.0.1:0",
+		Service:   New(st, testLogger()),
+		Transport: transport.Insecure(),
+		Metrics:   observability.Nop{},
+		Log:       testLogger(),
+	})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = comp.Start(ctx) }()
@@ -52,7 +58,7 @@ func dial(t *testing.T, st store.Store) (*Component, *grpc.ClientConn) {
 		cancel()
 		t.Fatal("server failed to bind")
 	}
-	conn, err := transport.Insecure{}.Dial(ctx, addr.String())
+	conn, err := transport.Insecure().Dial(ctx, addr.String())
 	if err != nil {
 		cancel()
 		t.Fatalf("dial: %v", err)

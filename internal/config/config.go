@@ -75,6 +75,39 @@ type Config struct {
 	HeartbeatInterval Duration `yaml:"heartbeat_interval"`
 	// ShutdownTimeout bounds graceful shutdown. Default 15s.
 	ShutdownTimeout Duration `yaml:"shutdown_timeout"`
+
+	// TLS configures transport security (insecure trusted-L3 by default).
+	TLS TLS `yaml:"tls"`
+	// ACL configures write authorization (disabled by default).
+	ACL ACL `yaml:"acl"`
+}
+
+// TLS configures TLS/mTLS transport security, off by default. Enabling it (and
+// optionally mutual_tls) turns on TLS/mTLS without any code change.
+type TLS struct {
+	// Enabled turns on TLS. CertFile/KeyFile are then required.
+	Enabled bool `yaml:"enabled"`
+	// CertFile and KeyFile are the node's certificate and key (PEM); they
+	// hot-reload on rotation without a restart.
+	CertFile string `yaml:"cert_file"`
+	KeyFile  string `yaml:"key_file"`
+	// CAFile is the trust anchor for verifying peers (PEM); required for mutual_tls.
+	CAFile string `yaml:"ca_file"`
+	// MutualTLS requires and verifies client certificates (and presents the node
+	// cert when dialing seeds). Identity is then the verified cert subject.
+	MutualTLS bool `yaml:"mutual_tls"`
+}
+
+// ACL configures write authorization. Disabled by default (anonymous-allow).
+type ACL struct {
+	// Mode is disabled|allow|enforce. enforce checks write ownership.
+	Mode string `yaml:"mode"`
+	// DefaultPolicy (allow|deny) only drives a loud migration warning when set to
+	// deny while Mode is allow (silent enforcement loss after a Consul cutover).
+	DefaultPolicy string `yaml:"default_policy"`
+	// TokensFile is a YAML token→principal map; a source of caller identity in
+	// enforce mode (alongside mutual TLS).
+	TokensFile string `yaml:"tokens_file"`
 }
 
 // Cluster groups the cluster name and how seeds are discovered.
@@ -195,6 +228,10 @@ func (c *Config) applyDefaults() {
 	if c.Cluster.Discovery != nil && c.Cluster.Discovery.UpdateInterval == 0 {
 		c.Cluster.Discovery.UpdateInterval = Duration(30 * time.Second)
 	}
+
+	if c.ACL.Mode == "" {
+		c.ACL.Mode = "disabled"
+	}
 }
 
 func defaultListener(l *Listener, port uint16) {
@@ -260,7 +297,50 @@ func (c *Config) Validate() error {
 		errs = append(errs, errors.New("cluster: agent role requires cluster.seeds or cluster.discovery"))
 	}
 
+	errs = append(errs, c.validateTLS()...)
+	errs = append(errs, c.validateACL()...)
+
 	return errors.Join(errs...)
+}
+
+func (c *Config) validateTLS() []error {
+	var errs []error
+	if c.TLS.Enabled {
+		if strings.TrimSpace(c.TLS.CertFile) == "" {
+			errs = append(errs, errors.New("tls.cert_file: is required when tls is enabled"))
+		}
+		if strings.TrimSpace(c.TLS.KeyFile) == "" {
+			errs = append(errs, errors.New("tls.key_file: is required when tls is enabled"))
+		}
+		if c.TLS.MutualTLS && strings.TrimSpace(c.TLS.CAFile) == "" {
+			errs = append(errs, errors.New("tls.ca_file: is required when tls.mutual_tls is set"))
+		}
+	}
+	if c.TLS.MutualTLS && !c.TLS.Enabled {
+		errs = append(errs, errors.New("tls.mutual_tls: requires tls.enabled"))
+	}
+	return errs
+}
+
+func (c *Config) validateACL() []error {
+	var errs []error
+	switch c.ACL.Mode {
+	case "", "disabled", "allow", "enforce":
+	default:
+		errs = append(errs, fmt.Errorf("acl.mode: must be disabled|allow|enforce, got %q", c.ACL.Mode))
+	}
+	switch c.ACL.DefaultPolicy {
+	case "", "allow", "deny":
+	default:
+		errs = append(errs, fmt.Errorf("acl.default_policy: must be allow or deny, got %q", c.ACL.DefaultPolicy))
+	}
+	// enforce needs a way to identify callers, else every write is anonymous and
+	// would be denied.
+	if c.ACL.Mode == "enforce" && !c.TLS.MutualTLS && strings.TrimSpace(c.ACL.TokensFile) == "" {
+		errs = append(errs, errors.New(
+			"acl.mode=enforce: requires tls.mutual_tls or acl.tokens_file to identify callers"))
+	}
+	return errs
 }
 
 func validateListener(path string, l Listener) []error {

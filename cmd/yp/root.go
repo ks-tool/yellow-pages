@@ -26,6 +26,7 @@ import (
 	"github.com/ks-tool/yellow-pages/internal/app"
 	"github.com/ks-tool/yellow-pages/internal/clock"
 	"github.com/ks-tool/yellow-pages/internal/config"
+	"github.com/ks-tool/yellow-pages/internal/cred"
 	"github.com/ks-tool/yellow-pages/internal/observability"
 	"github.com/ks-tool/yellow-pages/internal/server"
 	"github.com/ks-tool/yellow-pages/internal/store"
@@ -66,14 +67,22 @@ func newRootCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+
+			sec, err := setupSecurity(cfg, logger)
+			if err != nil {
+				return err
+			}
+
 			logger = logger.With(
 				"role", string(cfg.Role),
-				"node", cfg.NodeName,
+				"node", sec.nodeID,
 				"dc", cfg.Datacenter,
 			)
 			logger.Info("yellow-pages starting",
 				"version", version,
 				"cluster", cfg.Cluster.Name,
+				"tls", cfg.TLS.Enabled,
+				"acl_mode", cfg.ACL.Mode,
 				"grpc", cfg.Listeners.GRPC.Addr(),
 				"consul_http", listenerState(cfg.Listeners.ConsulHTTP),
 				"dns", listenerState(cfg.Listeners.DNS),
@@ -83,7 +92,7 @@ func newRootCmd() *cobra.Command {
 			clk := clock.System()
 			metrics := observability.NewPrometheus()
 
-			components := buildComponents(cfg, metrics, clk, logger)
+			components := buildComponents(cfg, metrics, clk, sec, logger)
 
 			application := app.New(
 				app.WithLogger(logger),
@@ -106,11 +115,60 @@ func newRootCmd() *cobra.Command {
 	return cmd
 }
 
-// buildComponents wires the serving components for the node's role. M3 serves
+// security bundles the node identity, transport credentials and authorization
+// resolved once at startup.
+type security struct {
+	nodeID   string
+	creds    cred.Credentials
+	identity cred.Identity
+	authz    *cred.Authorizer
+}
+
+// setupSecurity resolves the node id, transport credentials (insecure or
+// TLS/mTLS), the token→principal identity map and the acl.mode authorizer, and
+// emits the migration warning for allow+deny.
+func setupSecurity(cfg *config.Config, logger *slog.Logger) (security, error) {
+	nodeID, err := cred.NodeID(cfg.NodeName, cfg.DataDir, logger)
+	if err != nil {
+		return security{}, err
+	}
+
+	creds := cred.Insecure()
+	if cfg.TLS.Enabled {
+		creds, err = cred.NewTLS(cred.TLSConfig{
+			CertFile:  cfg.TLS.CertFile,
+			KeyFile:   cfg.TLS.KeyFile,
+			CAFile:    cfg.TLS.CAFile,
+			MutualTLS: cfg.TLS.MutualTLS,
+		})
+		if err != nil {
+			return security{}, err
+		}
+	}
+
+	tokens, err := cred.LoadTokens(cfg.ACL.TokensFile)
+	if err != nil {
+		return security{}, err
+	}
+	mode, err := cred.ParseMode(cfg.ACL.Mode)
+	if err != nil {
+		return security{}, err
+	}
+	cred.WarnPolicyMismatch(mode, cfg.ACL.DefaultPolicy, logger)
+
+	return security{
+		nodeID:   nodeID,
+		creds:    creds,
+		identity: cred.NewIdentity(tokens),
+		authz:    cred.NewAuthorizer(mode),
+	}, nil
+}
+
+// buildComponents wires the serving components for the node's role. M3/M4 serve
 // the native gRPC AgentService from a seed's local Store (single-seed path) plus
 // the optional /metrics endpoint; the agent's local-agent-proxy serving path and
 // the renew/GC loops arrive in M6.
-func buildComponents(cfg *config.Config, metrics *observability.Prometheus, clk clock.Clock, logger *slog.Logger) []app.Component {
+func buildComponents(cfg *config.Config, metrics *observability.Prometheus, clk clock.Clock, sec security, logger *slog.Logger) []app.Component {
 	var components []app.Component
 
 	if cfg.Listeners.Metrics.Enabled {
@@ -123,9 +181,15 @@ func buildComponents(cfg *config.Config, metrics *observability.Prometheus, clk 
 			Clock:      clk,
 			DefaultTTL: cfg.TTL.Duration(),
 		})
-		svc := server.New(st, logger)
-		components = append(components,
-			server.NewComponent(cfg.Listeners.GRPC.Addr(), svc, transport.Insecure{}, metrics, logger))
+		components = append(components, server.NewComponent(server.Options{
+			Addr:      cfg.Listeners.GRPC.Addr(),
+			Service:   server.New(st, logger),
+			Transport: transport.New(sec.creds),
+			Metrics:   metrics,
+			Identity:  sec.identity,
+			Authz:     sec.authz,
+			Log:       logger,
+		}))
 	}
 
 	return components

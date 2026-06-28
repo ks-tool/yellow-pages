@@ -27,6 +27,7 @@ import (
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/reflection"
 
+	"github.com/ks-tool/yellow-pages/internal/cred"
 	"github.com/ks-tool/yellow-pages/internal/observability"
 	"github.com/ks-tool/yellow-pages/internal/transport"
 	discoveryv1 "github.com/ks-tool/yellow-pages/proto/discovery/v1"
@@ -45,24 +46,50 @@ type Component struct {
 	lis       net.Listener
 }
 
-// NewComponent assembles the gRPC server for svc on addr. The transport supplies
-// the security (insecure in M3); metrics and log drive the interceptor chain.
-func NewComponent(
-	addr string,
-	svc discoveryv1.AgentServiceServer,
-	t transport.Transport,
-	m observability.Metrics,
-	log *slog.Logger,
-) *Component {
+// Options configures a gRPC server Component.
+type Options struct {
+	// Addr is the listen address (host:port).
+	Addr string
+	// Service is the AgentService implementation to serve.
+	Service discoveryv1.AgentServiceServer
+	// Transport supplies the transport security (insecure or TLS/mTLS).
+	Transport transport.Transport
+	// Metrics is the RPC metrics seam (defaults to a no-op when nil).
+	Metrics observability.Metrics
+	// Identity resolves the caller Principal for authz and audit.
+	Identity cred.Identity
+	// Authz enforces write ownership (defaults to disabled when nil).
+	Authz *cred.Authorizer
+	// Log is the structured logger.
+	Log *slog.Logger
+}
+
+// NewComponent assembles the gRPC server from opts. The interceptor chain is, in
+// order: recovery+access-log+metrics, write authorization, then audit; followed
+// by the AgentService, grpc.health.v1 and reflection.
+func NewComponent(opts Options) *Component {
+	log := opts.Log
 	if log == nil {
 		log = slog.Default()
 	}
+	authz := opts.Authz
+	if authz == nil {
+		authz = cred.NewAuthorizer(cred.ModeDisabled)
+	}
+	t := opts.Transport
+	if t == nil {
+		t = transport.Insecure()
+	}
 
 	gs := t.NewServer(
-		grpc.ChainUnaryInterceptor(observability.UnaryServerInterceptor(log, m)),
-		grpc.ChainStreamInterceptor(observability.StreamServerInterceptor(log, m)),
+		grpc.ChainUnaryInterceptor(
+			observability.UnaryServerInterceptor(log, opts.Metrics),
+			UnaryAuthzInterceptor(opts.Identity, authz, log),
+			UnaryAuditInterceptor(opts.Identity, log),
+		),
+		grpc.ChainStreamInterceptor(observability.StreamServerInterceptor(log, opts.Metrics)),
 	)
-	discoveryv1.RegisterAgentServiceServer(gs, svc)
+	discoveryv1.RegisterAgentServiceServer(gs, opts.Service)
 
 	hs := health.NewServer()
 	healthpb.RegisterHealthServer(gs, hs)
@@ -72,7 +99,7 @@ func NewComponent(
 	// flips them once the listener is up.
 	readiness := observability.NewReadiness(hs, "", discoveryv1.AgentService_ServiceDesc.ServiceName)
 
-	return &Component{addr: addr, log: log, grpc: gs, health: hs, readiness: readiness, ready: make(chan struct{})}
+	return &Component{addr: opts.Addr, log: log, grpc: gs, health: hs, readiness: readiness, ready: make(chan struct{})}
 }
 
 // Name identifies the component.
