@@ -33,12 +33,19 @@ import (
 )
 
 // Registry is the cluster surface the Consul adapter projects. Resolve returns
-// the merged entries and the age of the cache entry they came from.
+// the merged entries and the age of the cache entry they came from. The check
+// bridge maps Consul TTL checks to per-service lease operations.
 type Registry interface {
 	RegisterServices(ctx context.Context, reg model.Registration) error
 	RemoveService(ctx context.Context, serviceID string) error
 	Resolve(ctx context.Context, q model.Query, mode model.Consistency) (model.LookupResult, time.Duration, error)
 	Hosted() []model.ServiceInstance
+	// RenewService refreshes a service's lease (check pass/warn/update).
+	RenewService(ctx context.Context, serviceID string) error
+	// FailService forces a service critical (check fail).
+	FailService(ctx context.Context, serviceID string) error
+	// SetMaintenance toggles a service's maintenance drain flag.
+	SetMaintenance(ctx context.Context, serviceID string, enabled bool) error
 }
 
 // NodeInfo is this agent's static identity.
@@ -112,8 +119,21 @@ func NewHandler(opts Options) http.Handler {
 	mux.HandleFunc("GET /v1/catalog/nodes", h.catalogNodes)
 	mux.HandleFunc("GET /v1/catalog/datacenters", h.catalogDatacenters)
 	mux.HandleFunc("GET /v1/health/service/{service}", h.healthService)
+	mux.HandleFunc("GET /v1/health/checks/{service}", h.healthChecks)
+	mux.HandleFunc("GET /v1/health/state/{state}", h.healthState)
 	mux.HandleFunc("GET /v1/status/leader", h.statusLeader)
 	mux.HandleFunc("GET /v1/status/peers", h.statusPeers)
+
+	// Check bridge: Consul TTL checks map to per-service lease operations.
+	mux.HandleFunc("PUT /v1/agent/check/register", h.checkAccept)
+	mux.HandleFunc("PUT /v1/agent/check/deregister/{checkID}", h.checkAccept)
+	mux.HandleFunc("PUT /v1/agent/check/pass/{checkID}", h.checkUpdate)
+	mux.HandleFunc("PUT /v1/agent/check/warn/{checkID}", h.checkUpdate)
+	mux.HandleFunc("PUT /v1/agent/check/fail/{checkID}", h.checkUpdate)
+	mux.HandleFunc("PUT /v1/agent/check/update/{checkID}", h.checkUpdate)
+	mux.HandleFunc("GET /v1/agent/checks", h.agentChecks)
+	mux.HandleFunc("PUT /v1/agent/service/maintenance/{serviceID}", h.serviceMaintenance)
+	mux.HandleFunc("GET /v1/agent/health/service/name/{name}", h.agentHealthByName)
 	return mux
 }
 
@@ -132,15 +152,7 @@ func (h *Handler) registerService(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Name is required", http.StatusBadRequest)
 		return
 	}
-	id := in.ID
-	if id == "" {
-		id = in.Name
-	}
-	svc := model.ServiceInstance{
-		ID: id, Name: in.Name, Address: in.Address, Port: clampPort(in.Port),
-		Tags: in.Tags, Meta: in.Meta, Weights: weightsToModel(in.Weights), TTL: ttlFromCheck(in.Check),
-	}
-	reg := model.Registration{Node: h.node(), Services: []model.ServiceInstance{svc}, Generation: 1}
+	reg := model.Registration{Node: h.node(), Services: []model.ServiceInstance{inputToService(in)}, Generation: 1}
 	if err := h.reg.RegisterServices(r.Context(), reg); err != nil {
 		h.fail(w, err)
 		return
@@ -504,6 +516,18 @@ func healthStatus(s model.HealthState) string {
 func modelWeights(w model.Weights) weights {
 	w = w.OrDefault()
 	return weights{Passing: w.Passing, Warning: w.Warning}
+}
+
+// inputToService converts a Consul register/service-def input to a domain service.
+func inputToService(in registerInput) model.ServiceInstance {
+	id := in.ID
+	if id == "" {
+		id = in.Name
+	}
+	return model.ServiceInstance{
+		ID: id, Name: in.Name, Address: in.Address, Port: clampPort(in.Port),
+		Tags: in.Tags, Meta: in.Meta, Weights: weightsToModel(in.Weights), TTL: in.firstTTL(),
+	}
 }
 
 func weightsToModel(w *weights) model.Weights {

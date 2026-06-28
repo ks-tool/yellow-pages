@@ -63,6 +63,9 @@ type Config struct {
 	Datacenter string `yaml:"datacenter"`
 	// DataDir holds persisted state (e.g. node-id). Optional in M0.
 	DataDir string `yaml:"data_dir"`
+	// ConfigDir is a directory of Consul-compatible service-definition JSON files
+	// loaded at start and re-read on SIGHUP (M13). Optional.
+	ConfigDir string `yaml:"config_dir"`
 
 	// Cluster describes membership and seed discovery.
 	Cluster Cluster `yaml:"cluster"`

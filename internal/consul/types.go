@@ -21,6 +21,8 @@
 // deliberately separate types so a field never bleeds across.
 package consul
 
+import "time"
+
 // weights is Consul's Service.Weights / ServiceWeights. Always populated.
 type weights struct {
 	Passing uint32
@@ -126,6 +128,20 @@ type registerInput struct {
 	Meta    map[string]string `json:"Meta"`
 	Weights *weights          `json:"Weights"`
 	Check   *checkInput       `json:"Check"`
+	Checks  []checkInput      `json:"Checks"`
+}
+
+// firstTTL returns the bridged TTL from Check or the first of Checks.
+func (in registerInput) firstTTL() time.Duration {
+	if d := ttlFromCheck(in.Check); d > 0 {
+		return d
+	}
+	for i := range in.Checks {
+		if d := ttlFromCheck(&in.Checks[i]); d > 0 {
+			return d
+		}
+	}
+	return 0
 }
 
 // checkInput captures only the TTL we bridge to the lease; other check kinds are

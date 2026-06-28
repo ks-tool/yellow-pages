@@ -72,6 +72,16 @@ func (r *testRegistry) Hosted() []model.ServiceInstance {
 	return out
 }
 
+func (r *testRegistry) RenewService(_ context.Context, id string) error {
+	return r.st.Renew(r.node.ID, []string{id})
+}
+func (r *testRegistry) FailService(_ context.Context, id string) error {
+	return r.st.Fail(r.node.ID, id)
+}
+func (r *testRegistry) SetMaintenance(_ context.Context, id string, enabled bool) error {
+	return r.st.SetMaintenance(r.node.ID, id, enabled)
+}
+
 func newHandler(t *testing.T) (http.Handler, *testRegistry, *store.Memory) {
 	h, reg, st, _ := newHandlerWith(t, Options{})
 	return h, reg, st

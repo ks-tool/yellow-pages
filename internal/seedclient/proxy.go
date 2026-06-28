@@ -207,6 +207,32 @@ func (p *Proxy) Resolve(ctx context.Context, q model.Query, mode model.Consisten
 	return p.cache.LookupWithAge(ctx, q)
 }
 
+// RenewService refreshes one hosted service's lease on the seeds (Consul check
+// pass/warn/update).
+func (p *Proxy) RenewService(ctx context.Context, serviceID string) error {
+	if res := p.client.Renew(ctx, p.node.ID, []string{serviceID}); !res.OK(1) {
+		return status.Errorf(codes.Unavailable, "renewed on %d/%d seeds", res.Succeeded, res.Total)
+	}
+	return nil
+}
+
+// FailService is best-effort on an agent: the native protocol has no force-critical
+// RPC, so a failed check is realised by the service expiring on the next missed
+// renew. A seed-served Consul surface forces it critical immediately.
+func (p *Proxy) FailService(_ context.Context, serviceID string) error {
+	p.log.Warn("Consul check/fail on an agent is best-effort (no force-critical RPC); "+
+		"the service goes critical on its next missed renew", "service", serviceID)
+	return nil
+}
+
+// SetMaintenance is best-effort on an agent for the same reason as FailService;
+// a seed-served Consul surface applies it to the registry directly.
+func (p *Proxy) SetMaintenance(_ context.Context, serviceID string, enabled bool) error {
+	p.log.Warn("Consul maintenance on an agent is best-effort (served by seeds)",
+		"service", serviceID, "enabled", enabled)
+	return nil
+}
+
 // Hosted returns the services this agent currently hosts.
 func (p *Proxy) Hosted() []model.ServiceInstance {
 	p.mu.Lock()

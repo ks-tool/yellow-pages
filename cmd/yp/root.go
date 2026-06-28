@@ -243,6 +243,9 @@ func buildComponents(cfg *config.Config, metrics *observability.Prometheus, clk 
 		if c := dnsComponent(cfg, seedReg, logger); c != nil {
 			components = append(components, c)
 		}
+		if cfg.ConfigDir != "" {
+			components = append(components, consul.NewLoader(cfg.ConfigDir, seedReg, logger))
+		}
 
 	case config.RoleAgent:
 		if len(seeds) == 0 {
@@ -306,6 +309,9 @@ func buildComponents(cfg *config.Config, metrics *observability.Prometheus, clk 
 		}
 		if c := dnsComponent(cfg, proxy, logger); c != nil {
 			components = append(components, c)
+		}
+		if cfg.ConfigDir != "" {
+			components = append(components, consul.NewLoader(cfg.ConfigDir, proxy, logger))
 		}
 	}
 
@@ -383,6 +389,21 @@ func (s storeRegistry) RemoveService(_ context.Context, serviceID string) error 
 
 func (s storeRegistry) Resolve(_ context.Context, q model.Query, _ model.Consistency) (model.LookupResult, time.Duration, error) {
 	return s.st.Lookup(q), 0, nil
+}
+
+// RenewService refreshes one service's lease (Consul check pass/warn/update).
+func (s storeRegistry) RenewService(_ context.Context, serviceID string) error {
+	return s.st.Renew(s.node.ID, []string{serviceID})
+}
+
+// FailService forces a service critical (Consul check fail).
+func (s storeRegistry) FailService(_ context.Context, serviceID string) error {
+	return s.st.Fail(s.node.ID, serviceID)
+}
+
+// SetMaintenance toggles a service's maintenance flag.
+func (s storeRegistry) SetMaintenance(_ context.Context, serviceID string, enabled bool) error {
+	return s.st.SetMaintenance(s.node.ID, serviceID, enabled)
 }
 
 // Hosted reports no services: a seed serves the registry but hosts no app

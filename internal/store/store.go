@@ -63,6 +63,9 @@ type Store interface {
 	// SetMaintenance toggles the drain flag of a service: it stays visible with
 	// a maintenance marker but is excluded from ?passing and DNS.
 	SetMaintenance(nodeID, serviceID string, enabled bool) error
+	// Fail forces a service critical (Consul check/fail), kept visible; a Renew
+	// clears it.
+	Fail(nodeID, serviceID string) error
 	// Lookup returns the entries whose service Name matches the query exactly,
 	// filtered by datacenter and tags, with health derived from the lease.
 	Lookup(q model.Query) model.LookupResult
@@ -100,6 +103,7 @@ const defaultTTL = 30 * time.Second
 type service struct {
 	def         model.ServiceInstance // Address/Port/Tags/Meta/Weights/TTL/Generation/LastSeen
 	maintenance bool
+	failed      bool              // a Consul check/fail: forced critical, still visible
 	lastState   model.HealthState // last reconciled lease state (for transition detection)
 	createIndex uint64
 	modifyIndex uint64
@@ -256,6 +260,7 @@ func (m *Memory) Renew(nodeID string, serviceIDs []string) error {
 	if len(serviceIDs) == 0 {
 		for _, svc := range n.services {
 			svc.def.LastSeen = now
+			svc.failed = false // a pass/renew revives a failed check
 		}
 		return nil
 	}
@@ -265,7 +270,34 @@ func (m *Memory) Renew(nodeID string, serviceIDs []string) error {
 			return ErrNotFound
 		}
 		svc.def.LastSeen = now
+		svc.failed = false
 	}
+	return nil
+}
+
+// Fail forces a service critical (a Consul check/fail) while keeping it visible.
+// A subsequent Renew (check/pass) clears it.
+func (m *Memory) Fail(nodeID, serviceID string) error {
+	m.mu.Lock()
+	n, ok := m.nodes[nodeID]
+	if !ok {
+		m.mu.Unlock()
+		return ErrNotFound
+	}
+	svc, ok := n.services[serviceID]
+	if !ok {
+		m.mu.Unlock()
+		return ErrNotFound
+	}
+	if svc.failed {
+		m.mu.Unlock()
+		return nil
+	}
+	svc.failed = true
+	svc.modifyIndex = m.next()
+	event := m.putEvent(n.meta, svc)
+	m.mu.Unlock()
+	m.emit([]model.ChangeEvent{event})
 	return nil
 }
 
@@ -423,6 +455,9 @@ func (m *Memory) GC() int {
 // lease derives the health state of svc at now and whether it is past its grace
 // window (and so should be reaped). Callers hold m.mu.
 func (m *Memory) lease(svc *service, now time.Time) (state model.HealthState, expired bool) {
+	if svc.failed {
+		return model.HealthCritical, false // check/fail: forced critical, kept visible
+	}
 	age := now.Sub(svc.def.LastSeen)
 	switch {
 	case age <= svc.def.TTL:
