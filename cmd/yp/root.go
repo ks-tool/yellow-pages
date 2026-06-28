@@ -30,6 +30,7 @@ import (
 	"github.com/ks-tool/yellow-pages/internal/consul"
 	"github.com/ks-tool/yellow-pages/internal/consuldns"
 	"github.com/ks-tool/yellow-pages/internal/cred"
+	"github.com/ks-tool/yellow-pages/internal/federation"
 	"github.com/ks-tool/yellow-pages/internal/model"
 	"github.com/ks-tool/yellow-pages/internal/observability"
 	"github.com/ks-tool/yellow-pages/internal/resolver"
@@ -275,14 +276,25 @@ func buildComponents(cfg *config.Config, metrics *observability.Prometheus, clk 
 			OnChange: func(name string) { agentWatcher.NotifyNames(name) },
 			Log:      logger,
 		})
+		var fedRouter seedclient.Router
+		if cfg.Federation.Enabled {
+			pool, err := federation.NewPool(cfg.Datacenter, cfg.Federation.MaxHops, cfg.Federation.Datacenters,
+				transport.New(sec.creds), cfg.Agent.SeedTimeout.Duration(), logger)
+			if err != nil {
+				return nil, err
+			}
+			fedRouter = pool
+			components = append(components, pool)
+		}
 		proxy := seedclient.NewProxy(seedclient.ProxyOptions{
-			Client:  client,
-			Node:    node,
-			Quorum:  cfg.Agent.WriteQuorum,
-			Cache:   cache,
-			Watcher: agentWatcher,
-			Prop:    prop,
-			Log:     logger,
+			Client:     client,
+			Node:       node,
+			Quorum:     cfg.Agent.WriteQuorum,
+			Cache:      cache,
+			Watcher:    agentWatcher,
+			Federation: fedRouter,
+			Prop:       prop,
+			Log:        logger,
 		})
 		// The local-agent-proxy listens on a trusted loopback for local apps;
 		// ownership authz is enforced by the seeds, not here, so the local server
@@ -368,6 +380,7 @@ func consulComponent(cfg *config.Config, reg consul.Registry, node model.Node, s
 			Address:    node.Address,
 			Version:    version,
 			Seeds:      seeds,
+			Federated:  federatedDCs(cfg),
 		},
 		Watcher:   watcher,
 		Identity:  sec.identity,
@@ -378,6 +391,21 @@ func consulComponent(cfg *config.Config, reg consul.Registry, node model.Node, s
 		Log:       logger,
 	})
 	return consul.NewComponent(cfg.Listeners.ConsulHTTP.Addr(), handler, logger)
+}
+
+// federatedDCs lists the configured remote datacenter names (M17), or nil when
+// federation is disabled.
+func federatedDCs(cfg *config.Config) []string {
+	if !cfg.Federation.Enabled {
+		return nil
+	}
+	dcs := make([]string, 0, len(cfg.Federation.Datacenters))
+	for dc := range cfg.Federation.Datacenters {
+		if dc != cfg.Datacenter {
+			dcs = append(dcs, dc)
+		}
+	}
+	return dcs
 }
 
 func listenerState(l config.Listener) string {

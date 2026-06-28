@@ -68,6 +68,8 @@ type NodeInfo struct {
 	Address    string
 	Version    string
 	Seeds      []string
+	// Federated are remote datacenter names (M17), reported by /v1/catalog/datacenters.
+	Federated []string
 }
 
 const (
@@ -338,7 +340,8 @@ func (h *Handler) agentSelf(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (h *Handler) catalogDatacenters(w http.ResponseWriter, _ *http.Request) {
-	h.writeJSON(w, h.indexFor(model.Query{}), model.ConsistencyDefault, 0, []string{h.info.Datacenter})
+	dcs := append([]string{h.info.Datacenter}, h.info.Federated...)
+	h.writeJSON(w, h.indexFor(model.Query{}), model.ConsistencyDefault, 0, dcs)
 }
 
 func (h *Handler) statusLeader(w http.ResponseWriter, _ *http.Request) {

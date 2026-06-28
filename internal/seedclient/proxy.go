@@ -46,16 +46,24 @@ const watchMaxWait = 10 * time.Minute
 // deregister them.
 type Proxy struct {
 	discoveryv1.UnimplementedAgentServiceServer
-	client  *SeedClient
-	cache   *Cache
-	watcher *watch.Watcher
-	node    model.Node
-	quorum  int
-	prop    *observability.Propagation
-	log     *slog.Logger
+	client     *SeedClient
+	cache      *Cache
+	watcher    *watch.Watcher
+	federation Router
+	node       model.Node
+	quorum     int
+	prop       *observability.Propagation
+	log        *slog.Logger
 
 	mu     sync.Mutex
 	hosted map[string]model.ServiceInstance // serviceID -> definition
+}
+
+// Router federates remote-datacenter reads (M17, v1.x). The federation Pool
+// satisfies it structurally; nil disables cross-DC routing.
+type Router interface {
+	IsRemote(dc string) bool
+	Resolve(ctx context.Context, dc string, q model.Query) (model.LookupResult, error)
 }
 
 // ProxyOptions configures a Proxy.
@@ -71,6 +79,8 @@ type ProxyOptions struct {
 	// Watcher backs the Watch RPC with the agent's synthesised monotonic index;
 	// nil reports Watch as Unimplemented.
 	Watcher *watch.Watcher
+	// Federation routes remote-datacenter reads (optional, M17).
+	Federation Router
 	// Prop records register-to-visible / deregister-to-removed SLIs (optional).
 	Prop *observability.Propagation
 	// Log is the structured logger.
@@ -86,14 +96,15 @@ func NewProxy(opts ProxyOptions) *Proxy {
 		opts.Log = slog.Default()
 	}
 	return &Proxy{
-		client:  opts.Client,
-		cache:   opts.Cache,
-		watcher: opts.Watcher,
-		node:    opts.Node,
-		quorum:  opts.Quorum,
-		prop:    opts.Prop,
-		log:     opts.Log,
-		hosted:  make(map[string]model.ServiceInstance),
+		client:     opts.Client,
+		cache:      opts.Cache,
+		watcher:    opts.Watcher,
+		federation: opts.Federation,
+		node:       opts.Node,
+		quorum:     opts.Quorum,
+		prop:       opts.Prop,
+		log:        opts.Log,
+		hosted:     make(map[string]model.ServiceInstance),
 	}
 }
 
@@ -200,6 +211,11 @@ func (p *Proxy) RemoveService(ctx context.Context, serviceID string) error {
 // mode, plus the age of the cache entry it came from (0 for a fresh fan-out).
 // ConsistencyConsistent bypasses the cache; the others serve it.
 func (p *Proxy) Resolve(ctx context.Context, q model.Query, mode model.Consistency) (model.LookupResult, time.Duration, error) {
+	// A remote-datacenter read is federated to that cluster's seeds (never cached).
+	if p.federation != nil && p.federation.IsRemote(q.Datacenter) {
+		lr, err := p.federation.Resolve(ctx, q.Datacenter, q)
+		return lr, 0, err
+	}
 	if mode == model.ConsistencyConsistent || p.cache == nil {
 		lr, err := p.directLookup(ctx, q)
 		return lr, 0, err

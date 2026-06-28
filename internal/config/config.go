@@ -93,6 +93,29 @@ type Config struct {
 	Agent Agent `yaml:"agent"`
 	// DNS configures the Consul-compatible DNS interface (M12).
 	DNS DNSConfig `yaml:"dns"`
+	// Federation configures cross-datacenter lookups (M17, v1.x; off by default).
+	Federation Federation `yaml:"federation"`
+	// Membership configures seed snapshot-on-join + anti-entropy (M18, v1.x; off).
+	Membership Membership `yaml:"membership"`
+}
+
+// Federation configures cross-DC lookups (?dc / .dc.consul). Disabled by default.
+type Federation struct {
+	Enabled bool `yaml:"enabled"`
+	// MaxHops bounds federated request depth (loop guard). Default 1.
+	MaxHops int `yaml:"max_hops"`
+	// Datacenters maps a remote datacenter name to its seed addresses.
+	Datacenters map[string][]string `yaml:"datacenters"`
+}
+
+// Membership configures the seed tier's self-healing (snapshot-on-join +
+// pull-based anti-entropy). Disabled by default.
+type Membership struct {
+	Enabled bool `yaml:"enabled"`
+	// Peers are the other seeds' gRPC addresses to sync from.
+	Peers []string `yaml:"peers"`
+	// SyncInterval is the anti-entropy pull cadence. Default 30s.
+	SyncInterval Duration `yaml:"sync_interval"`
 }
 
 // DNSConfig configures the Consul DNS interface (the listener address/port is
@@ -268,6 +291,12 @@ func (c *Config) applyDefaults() {
 	}
 	if c.ShutdownTimeout == 0 {
 		c.ShutdownTimeout = Duration(15 * time.Second)
+	}
+	if c.Federation.MaxHops == 0 {
+		c.Federation.MaxHops = 1
+	}
+	if c.Membership.SyncInterval == 0 {
+		c.Membership.SyncInterval = Duration(30 * time.Second)
 	}
 
 	// The native gRPC API is the core surface and is always served.
