@@ -81,6 +81,13 @@ func (r *testRegistry) FailService(_ context.Context, id string) error {
 func (r *testRegistry) SetMaintenance(_ context.Context, id string, enabled bool) error {
 	return r.st.SetMaintenance(r.node.ID, id, enabled)
 }
+func (r *testRegistry) RegisterExternal(_ context.Context, reg model.Registration) error {
+	return r.st.Register(reg)
+}
+func (r *testRegistry) RemoveNode(_ context.Context, nodeID string) error {
+	_ = r.st.Deregister(nodeID)
+	return nil
+}
 
 func newHandler(t *testing.T) (http.Handler, *testRegistry, *store.Memory) {
 	h, reg, st, _ := newHandlerWith(t, Options{})

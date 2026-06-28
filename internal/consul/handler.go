@@ -53,6 +53,11 @@ type Registry interface {
 	FailService(ctx context.Context, serviceID string) error
 	// SetMaintenance toggles a service's maintenance drain flag.
 	SetMaintenance(ctx context.Context, serviceID string, enabled bool) error
+	// RegisterExternal registers a node and services with the node taken from the
+	// payload (not the agent's) — catalog/register, used by migration backfill.
+	RegisterExternal(ctx context.Context, reg model.Registration) error
+	// RemoveNode deregisters an external node and all its services.
+	RemoveNode(ctx context.Context, nodeID string) error
 }
 
 // NodeInfo is this agent's static identity.
@@ -149,6 +154,8 @@ func NewHandler(opts Options) http.Handler {
 	mux.HandleFunc("GET /v1/agent/checks", h.agentChecks)
 	mux.HandleFunc("PUT /v1/agent/service/maintenance/{serviceID}", h.serviceMaintenance)
 	mux.HandleFunc("GET /v1/agent/health/service/name/{name}", h.agentHealthByName)
+	mux.HandleFunc("PUT /v1/catalog/register", h.catalogRegister)
+	mux.HandleFunc("PUT /v1/catalog/deregister", h.catalogDeregister)
 	mux.HandleFunc("GET /v1/internal/registry-dump", h.registryDump)
 
 	// Count every request to this surface (low-cardinality label).

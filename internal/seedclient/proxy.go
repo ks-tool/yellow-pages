@@ -238,6 +238,21 @@ func (p *Proxy) Dump(ctx context.Context, q model.Query) map[string][]model.Serv
 	return p.client.Dump(ctx, q)
 }
 
+// RegisterExternal fans out a registration with the payload's node identity
+// (migration backfill via catalog/register).
+func (p *Proxy) RegisterExternal(ctx context.Context, reg model.Registration) error {
+	if res := p.client.Register(ctx, reg); !res.OK(1) {
+		return status.Errorf(codes.Unavailable, "registered on %d/%d seeds", res.Succeeded, res.Total)
+	}
+	return nil
+}
+
+// RemoveNode fans out a whole-node deregister for an external node.
+func (p *Proxy) RemoveNode(ctx context.Context, nodeID string) error {
+	p.client.Deregister(ctx, nodeID)
+	return nil
+}
+
 // Hosted returns the services this agent currently hosts.
 func (p *Proxy) Hosted() []model.ServiceInstance {
 	p.mu.Lock()

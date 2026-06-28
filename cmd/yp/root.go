@@ -17,7 +17,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -126,6 +125,8 @@ func newRootCmd() *cobra.Command {
 		},
 	}
 
+	cmd.AddCommand(newImportCmd())
+
 	cmd.SetVersionTemplate("{{.Version}}\n")
 	flags := cmd.Flags()
 	flags.StringVarP(&configPath, "config", "c", "", "path to config file (.yaml/.yml/.json)")
@@ -226,7 +227,7 @@ func buildComponents(cfg *config.Config, metrics *observability.Prometheus, clk 
 			OnChange:   watcher.Notify,
 		})
 		seedNode := model.Node{ID: sec.nodeID, Name: cfg.NodeName, Address: cfg.Listeners.GRPC.Address, Datacenter: cfg.Datacenter}
-		seedReg := storeRegistry{st: st, node: seedNode}
+		seedReg := consul.NewStoreRegistry(st, seedNode)
 		components = append(components,
 			server.NewComponent(server.Options{
 				Addr:      cfg.Listeners.GRPC.Addr(),
@@ -374,49 +375,6 @@ func consulComponent(cfg *config.Config, reg consul.Registry, node model.Node, s
 		Log:      logger,
 	})
 	return consul.NewComponent(cfg.Listeners.ConsulHTTP.Addr(), handler, logger)
-}
-
-// storeRegistry adapts a seed's Store to the Consul registry surface.
-type storeRegistry struct {
-	st   store.Store
-	node model.Node
-}
-
-func (s storeRegistry) RegisterServices(_ context.Context, reg model.Registration) error {
-	reg.Node = s.node
-	return s.st.Register(reg)
-}
-
-func (s storeRegistry) RemoveService(_ context.Context, serviceID string) error {
-	return s.st.DeregisterService(s.node.ID, serviceID)
-}
-
-func (s storeRegistry) Resolve(_ context.Context, q model.Query, _ model.Consistency) (model.LookupResult, time.Duration, error) {
-	return s.st.Lookup(q), 0, nil
-}
-
-// RenewService refreshes one service's lease (Consul check pass/warn/update).
-func (s storeRegistry) RenewService(_ context.Context, serviceID string) error {
-	return s.st.Renew(s.node.ID, []string{serviceID})
-}
-
-// FailService forces a service critical (Consul check fail).
-func (s storeRegistry) FailService(_ context.Context, serviceID string) error {
-	return s.st.Fail(s.node.ID, serviceID)
-}
-
-// SetMaintenance toggles a service's maintenance flag.
-func (s storeRegistry) SetMaintenance(_ context.Context, serviceID string, enabled bool) error {
-	return s.st.SetMaintenance(s.node.ID, serviceID, enabled)
-}
-
-// Hosted reports no services: a seed serves the registry but hosts no app
-// services of its own in this model.
-func (s storeRegistry) Hosted() []model.ServiceInstance { return nil }
-
-// Dump returns the seed's own registry view (no per-seed divergence on a seed).
-func (s storeRegistry) Dump(_ context.Context, q model.Query) map[string][]model.ServiceEntry {
-	return map[string][]model.ServiceEntry{"local": s.st.Lookup(q).Entries}
 }
 
 func listenerState(l config.Listener) string {
