@@ -105,6 +105,14 @@ type ServiceEntry struct {
 	Service     ServiceInstance
 	Health      HealthState
 	Maintenance bool
+	// CreateIndex is the registry index at which the entry was first created.
+	// ModifyIndex is the index of its most recent change. Both are assigned by
+	// the registry that owns the entry (the seed Store, later the agent's merge
+	// cache) and back the Consul X-Consul-Index / CreateIndex / ModifyIndex. They
+	// are deliberately NOT carried over the native discovery.v1 wire: per the
+	// architecture, seed indexes must not leak; the agent synthesises its own.
+	CreateIndex uint64
+	ModifyIndex uint64
 }
 
 // LookupResult is the result of a Lookup: matching entries and the registry
