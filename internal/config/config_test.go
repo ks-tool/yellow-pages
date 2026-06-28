@@ -173,6 +173,16 @@ cluster:
   name: prod
 acl:
   mode: enforce`,
+		"agent negative write_quorum": `role: seed
+cluster:
+  name: prod
+agent:
+  write_quorum: -1`,
+		"agent negative seed_timeout": `role: seed
+cluster:
+  name: prod
+agent:
+  seed_timeout: -5s`,
 		"empty": ``,
 	}
 

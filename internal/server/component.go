@@ -21,12 +21,14 @@ import (
 	"errors"
 	"log/slog"
 	"net"
+	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/reflection"
 
+	"github.com/ks-tool/yellow-pages/internal/clock"
 	"github.com/ks-tool/yellow-pages/internal/cred"
 	"github.com/ks-tool/yellow-pages/internal/observability"
 	"github.com/ks-tool/yellow-pages/internal/transport"
@@ -37,13 +39,15 @@ import (
 // health service and server reflection, instrumented with the recovery,
 // access-log and metrics interceptor chain. It satisfies app.Component.
 type Component struct {
-	addr      string
-	log       *slog.Logger
-	grpc      *grpc.Server
-	health    *health.Server
-	readiness *observability.Readiness
-	ready     chan struct{} // closed once the listener is bound (or binding failed)
-	lis       net.Listener
+	addr        string
+	log         *slog.Logger
+	grpc        *grpc.Server
+	health      *health.Server
+	readiness   *observability.Readiness
+	drainWindow time.Duration
+	clock       clock.Clock
+	ready       chan struct{} // closed once the listener is bound (or binding failed)
+	lis         net.Listener
 }
 
 // Options configures a gRPC server Component.
@@ -60,6 +64,11 @@ type Options struct {
 	Identity cred.Identity
 	// Authz enforces write ownership (defaults to disabled when nil).
 	Authz *cred.Authorizer
+	// DrainWindow, when > 0, is how long Stop waits after flipping readiness
+	// NOT_SERVING before it stops accepting (lame-duck). Default 0 (no wait).
+	DrainWindow time.Duration
+	// Clock is the time seam used for the drain wait (defaults to System).
+	Clock clock.Clock
 	// Log is the structured logger.
 	Log *slog.Logger
 }
@@ -80,6 +89,10 @@ func NewComponent(opts Options) *Component {
 	if t == nil {
 		t = transport.Insecure()
 	}
+	clk := opts.Clock
+	if clk == nil {
+		clk = clock.System()
+	}
 
 	gs := t.NewServer(
 		grpc.ChainUnaryInterceptor(
@@ -99,11 +112,24 @@ func NewComponent(opts Options) *Component {
 	// flips them once the listener is up.
 	readiness := observability.NewReadiness(hs, "", discoveryv1.AgentService_ServiceDesc.ServiceName)
 
-	return &Component{addr: opts.Addr, log: log, grpc: gs, health: hs, readiness: readiness, ready: make(chan struct{})}
+	return &Component{
+		addr:        opts.Addr,
+		log:         log,
+		grpc:        gs,
+		health:      hs,
+		readiness:   readiness,
+		drainWindow: opts.DrainWindow,
+		clock:       clk,
+		ready:       make(chan struct{}),
+	}
 }
 
 // Name identifies the component.
 func (c *Component) Name() string { return "grpc-server" }
+
+// Readiness returns the server's readiness gate so an owner (e.g. the agent's
+// readiness prober) can drive SERVING/NOT_SERVING from seed connectivity.
+func (c *Component) Readiness() *observability.Readiness { return c.readiness }
 
 // Addr blocks until the listener has bound and returns its address, or nil if
 // binding failed. It is intended for tests that bind on an ephemeral port.
@@ -145,10 +171,20 @@ func (c *Component) Start(ctx context.Context) error {
 	}
 }
 
-// Stop flips the server NOT_SERVING and gracefully drains in-flight RPCs within
-// ctx's deadline, forcing a hard stop if the deadline is exceeded.
+// Stop flips the server NOT_SERVING, waits the lame-duck drain window (so load
+// balancers notice before traffic stops), then gracefully drains in-flight RPCs
+// within ctx's deadline, forcing a hard stop if the deadline is exceeded.
 func (c *Component) Stop(ctx context.Context) error {
 	c.readiness.SetReady(false)
+
+	if c.drainWindow > 0 {
+		select {
+		case <-c.clock.After(c.drainWindow):
+		case <-ctx.Done():
+			c.grpc.Stop()
+			return ctx.Err()
+		}
+	}
 
 	done := make(chan struct{})
 	go func() {

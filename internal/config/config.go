@@ -80,6 +80,23 @@ type Config struct {
 	TLS TLS `yaml:"tls"`
 	// ACL configures write authorization (disabled by default).
 	ACL ACL `yaml:"acl"`
+	// Agent tunes the agent's seed fan-out, readiness and drain behaviour.
+	Agent Agent `yaml:"agent"`
+}
+
+// Agent tunes the agent role's seed fan-out, readiness gate and drain sequence.
+type Agent struct {
+	// SeedTimeout bounds a single RPC to one seed during fan-out. Default 3s.
+	SeedTimeout Duration `yaml:"seed_timeout"`
+	// WriteQuorum is the minimum number of seeds a write must reach to be
+	// considered successful (k-of-N). Default 1.
+	WriteQuorum int `yaml:"write_quorum"`
+	// ReadyMinSeeds is the minimum number of reachable seeds for the agent to
+	// report READY. Default 1.
+	ReadyMinSeeds int `yaml:"ready_min_seeds"`
+	// DrainWindow is the lame-duck window: after readiness goes NOT_SERVING the
+	// agent waits this long before it stops accepting and deregisters. Default 5s.
+	DrainWindow Duration `yaml:"drain_window"`
 }
 
 // TLS configures TLS/mTLS transport security, off by default. Enabling it (and
@@ -232,6 +249,19 @@ func (c *Config) applyDefaults() {
 	if c.ACL.Mode == "" {
 		c.ACL.Mode = "disabled"
 	}
+
+	if c.Agent.SeedTimeout == 0 {
+		c.Agent.SeedTimeout = Duration(3 * time.Second)
+	}
+	if c.Agent.WriteQuorum == 0 {
+		c.Agent.WriteQuorum = 1
+	}
+	if c.Agent.ReadyMinSeeds == 0 {
+		c.Agent.ReadyMinSeeds = 1
+	}
+	if c.Agent.DrainWindow == 0 {
+		c.Agent.DrainWindow = Duration(5 * time.Second)
+	}
 }
 
 func defaultListener(l *Listener, port uint16) {
@@ -299,8 +329,26 @@ func (c *Config) Validate() error {
 
 	errs = append(errs, c.validateTLS()...)
 	errs = append(errs, c.validateACL()...)
+	errs = append(errs, c.validateAgent()...)
 
 	return errors.Join(errs...)
+}
+
+func (c *Config) validateAgent() []error {
+	var errs []error
+	if c.Agent.SeedTimeout <= 0 {
+		errs = append(errs, errors.New("agent.seed_timeout: must be positive"))
+	}
+	if c.Agent.WriteQuorum < 1 {
+		errs = append(errs, errors.New("agent.write_quorum: must be at least 1"))
+	}
+	if c.Agent.ReadyMinSeeds < 1 {
+		errs = append(errs, errors.New("agent.ready_min_seeds: must be at least 1"))
+	}
+	if c.Agent.DrainWindow < 0 {
+		errs = append(errs, errors.New("agent.drain_window: must not be negative"))
+	}
+	return errs
 }
 
 func (c *Config) validateTLS() []error {

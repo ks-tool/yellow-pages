@@ -27,8 +27,10 @@ import (
 	"github.com/ks-tool/yellow-pages/internal/clock"
 	"github.com/ks-tool/yellow-pages/internal/config"
 	"github.com/ks-tool/yellow-pages/internal/cred"
+	"github.com/ks-tool/yellow-pages/internal/model"
 	"github.com/ks-tool/yellow-pages/internal/observability"
 	"github.com/ks-tool/yellow-pages/internal/resolver"
+	"github.com/ks-tool/yellow-pages/internal/seedclient"
 	"github.com/ks-tool/yellow-pages/internal/server"
 	"github.com/ks-tool/yellow-pages/internal/store"
 	"github.com/ks-tool/yellow-pages/internal/transport"
@@ -90,11 +92,12 @@ func newRootCmd() *cobra.Command {
 				"metrics", listenerState(cfg.Listeners.Metrics),
 			)
 
-			// Resolve the seed set (static + optional plugin). The SeedClient
-			// consumes the provider from M6; here we surface it at startup. A
-			// resolution failure is non-fatal (the merge is non-destructive).
+			// Resolve the seed set (static + optional plugin). A resolution
+			// failure is non-fatal here (the merge is non-destructive); an agent
+			// with no usable seeds fails later in buildComponents.
 			provider := buildSeedProvider(cfg, logger)
-			if seeds, rerr := provider.Seeds(cmd.Context()); rerr != nil {
+			seeds, rerr := provider.Seeds(cmd.Context())
+			if rerr != nil {
 				logger.Warn("seed resolution failed at startup", "error", rerr)
 			} else {
 				logger.Info("seeds resolved", "count", len(seeds), "seeds", seeds)
@@ -103,7 +106,10 @@ func newRootCmd() *cobra.Command {
 			clk := clock.System()
 			metrics := observability.NewPrometheus()
 
-			components := buildComponents(cfg, metrics, clk, sec, logger)
+			components, err := buildComponents(cfg, metrics, clk, sec, seeds, logger)
+			if err != nil {
+				return err
+			}
 
 			application := app.New(
 				app.WithLogger(logger),
@@ -191,11 +197,12 @@ func buildSeedProvider(cfg *config.Config, logger *slog.Logger) resolver.SeedPro
 	return resolver.NewMerged(logger, providers...)
 }
 
-// buildComponents wires the serving components for the node's role. M3/M4 serve
-// the native gRPC AgentService from a seed's local Store (single-seed path) plus
-// the optional /metrics endpoint; the agent's local-agent-proxy serving path and
-// the renew/GC loops arrive in M6.
-func buildComponents(cfg *config.Config, metrics *observability.Prometheus, clk clock.Clock, sec security, logger *slog.Logger) []app.Component {
+// buildComponents wires the serving components for the node's role: a seed runs
+// the registry gRPC server plus a GC loop; an agent runs the local-agent-proxy
+// gRPC server backed by a SeedClient, a readiness probe, a renew loop and a
+// shutdown deregistrar — ordered so Stop drains as
+// readiness-off -> drain-window -> stop-accept -> deregister -> close.
+func buildComponents(cfg *config.Config, metrics *observability.Prometheus, clk clock.Clock, sec security, seeds []string, logger *slog.Logger) ([]app.Component, error) {
 	var components []app.Component
 
 	if cfg.Listeners.Metrics.Enabled {
@@ -203,23 +210,65 @@ func buildComponents(cfg *config.Config, metrics *observability.Prometheus, clk 
 			observability.NewMetricsServer(cfg.Listeners.Metrics.Addr(), metrics.Registry(), logger))
 	}
 
-	if cfg.Role == config.RoleSeed {
+	switch cfg.Role {
+	case config.RoleSeed:
 		st := store.NewMemory(store.Options{
 			Clock:      clk,
 			DefaultTTL: cfg.TTL.Duration(),
 		})
-		components = append(components, server.NewComponent(server.Options{
-			Addr:      cfg.Listeners.GRPC.Addr(),
-			Service:   server.New(st, logger),
-			Transport: transport.New(sec.creds),
-			Metrics:   metrics,
-			Identity:  sec.identity,
-			Authz:     sec.authz,
-			Log:       logger,
-		}))
+		components = append(components,
+			server.NewComponent(server.Options{
+				Addr:      cfg.Listeners.GRPC.Addr(),
+				Service:   server.New(st, logger),
+				Transport: transport.New(sec.creds),
+				Metrics:   metrics,
+				Identity:  sec.identity,
+				Authz:     sec.authz,
+				Log:       logger,
+			}),
+			store.NewGCLoop(st, cfg.HeartbeatInterval.Duration(), clk, logger),
+		)
+
+	case config.RoleAgent:
+		if len(seeds) == 0 {
+			return nil, fmt.Errorf("agent: no seeds resolved (configure cluster.seeds or cluster.discovery)")
+		}
+		client, err := seedclient.New(seeds, transport.New(sec.creds), cfg.Agent.SeedTimeout.Duration(), logger)
+		if err != nil {
+			return nil, err
+		}
+		node := model.Node{
+			ID:         sec.nodeID,
+			Name:       cfg.NodeName,
+			Address:    cfg.Listeners.GRPC.Address,
+			Datacenter: cfg.Datacenter,
+		}
+		proxy := seedclient.NewProxy(client, node, cfg.Agent.WriteQuorum, logger)
+		// The local-agent-proxy listens on a trusted loopback for local apps;
+		// ownership authz is enforced by the seeds, not here, so the local server
+		// runs with authz disabled (audit still records writes).
+		grpcComp := server.NewComponent(server.Options{
+			Addr:        cfg.Listeners.GRPC.Addr(),
+			Service:     proxy,
+			Transport:   transport.New(sec.creds),
+			Metrics:     metrics,
+			Identity:    sec.identity,
+			DrainWindow: cfg.Agent.DrainWindow.Duration(),
+			Clock:       clk,
+			Log:         logger,
+		})
+		// Start order chosen so Stop (reverse) drains correctly: renew-loop,
+		// readiness-probe, grpc-server (readiness-off + drain-window + GracefulStop),
+		// then deregistrar (deregister + close).
+		components = append(components,
+			seedclient.NewDeregistrar(client, node.ID, logger),
+			grpcComp,
+			seedclient.NewReadinessProbe(client, grpcComp.Readiness(), cfg.Agent.ReadyMinSeeds, cfg.HeartbeatInterval.Duration(), clk, logger),
+			seedclient.NewRenewLoop(proxy, cfg.HeartbeatInterval.Duration(), clk, logger),
+		)
 	}
 
-	return components
+	return components, nil
 }
 
 func listenerState(l config.Listener) string {

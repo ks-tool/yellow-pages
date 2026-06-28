@@ -19,6 +19,7 @@ package main
 import (
 	"io"
 	"log/slog"
+	"slices"
 	"testing"
 
 	"github.com/ks-tool/yellow-pages/internal/clock"
@@ -36,9 +37,13 @@ func testSecurity() security {
 	}
 }
 
-func componentNames(cfg *config.Config) []string {
+func componentNames(t *testing.T, cfg *config.Config, seeds []string) []string {
+	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	components := buildComponents(cfg, observability.NewPrometheus(), clock.System(), testSecurity(), logger)
+	components, err := buildComponents(cfg, observability.NewPrometheus(), clock.System(), testSecurity(), seeds, logger)
+	if err != nil {
+		t.Fatalf("buildComponents: %v", err)
+	}
 	names := make([]string, 0, len(components))
 	for _, c := range components {
 		names = append(names, c.Name())
@@ -46,33 +51,52 @@ func componentNames(cfg *config.Config) []string {
 	return names
 }
 
-func has(names []string, want string) bool {
-	for _, n := range names {
-		if n == want {
-			return true
-		}
-	}
-	return false
-}
-
-// TestRoleDeterminesRegistryListener verifies that only a seed opens the inbound
-// gRPC registry server; an agent holds no inbound registry.
-func TestRoleDeterminesRegistryListener(t *testing.T) {
+// TestSeedHoldsRegistryAgentDoesNot verifies the role split: only a seed runs
+// the registry (store + GC loop); an agent holds no inbound registry — its
+// gRPC server is the local-agent-proxy, fanning out to seeds.
+func TestSeedHoldsRegistryAgentDoesNot(t *testing.T) {
 	t.Parallel()
 
 	seedCfg, err := config.Parse([]byte("role: seed\ncluster:\n  name: test\n"), ".yaml")
 	if err != nil {
 		t.Fatalf("parse seed config: %v", err)
 	}
-	if names := componentNames(seedCfg); !has(names, "grpc-server") {
-		t.Errorf("seed components %v: expected a grpc-server", names)
+	seedNames := componentNames(t, seedCfg, nil)
+	if !slices.Contains(seedNames, "grpc-server") || !slices.Contains(seedNames, "store-gc") {
+		t.Errorf("seed components %v: expected grpc-server and store-gc (registry)", seedNames)
 	}
 
 	agentCfg, err := config.Parse([]byte("role: agent\ncluster:\n  name: test\n  seeds: [\"127.0.0.1:9900\"]\n"), ".yaml")
 	if err != nil {
 		t.Fatalf("parse agent config: %v", err)
 	}
-	if names := componentNames(agentCfg); has(names, "grpc-server") {
-		t.Errorf("agent components %v: must NOT open the inbound registry server", names)
+	agentNames := componentNames(t, agentCfg, []string{"127.0.0.1:9900"})
+	if slices.Contains(agentNames, "store-gc") {
+		t.Errorf("agent components %v: must hold no inbound registry (no store-gc)", agentNames)
+	}
+}
+
+// TestAgentDrainOrdering verifies the agent component start order yields the
+// correct drain on Stop (reverse order): the grpc-server (which flips readiness
+// off) stops before the deregistrar, so readiness goes NOT_SERVING before the
+// shutdown deregister.
+func TestAgentDrainOrdering(t *testing.T) {
+	t.Parallel()
+
+	agentCfg, err := config.Parse([]byte("role: agent\ncluster:\n  name: test\n  seeds: [\"127.0.0.1:9900\"]\n"), ".yaml")
+	if err != nil {
+		t.Fatalf("parse agent config: %v", err)
+	}
+	names := componentNames(t, agentCfg, []string{"127.0.0.1:9900"})
+
+	deregIdx := slices.Index(names, "deregistrar")
+	serverIdx := slices.Index(names, "grpc-server")
+	if deregIdx < 0 || serverIdx < 0 {
+		t.Fatalf("agent components %v missing deregistrar/grpc-server", names)
+	}
+	// Start order: deregistrar before grpc-server => Stop order (reverse): the
+	// grpc-server (readiness off) stops before the deregistrar (deregister).
+	if deregIdx > serverIdx {
+		t.Errorf("components %v: deregistrar must start before grpc-server so it stops (deregisters) after readiness goes off", names)
 	}
 }
