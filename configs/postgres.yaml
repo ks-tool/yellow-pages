@@ -1,0 +1,8 @@
+name: postgres
+address: postgres-master
+port: 5432
+metadata:
+  key-pg: value-pg
+tags:
+  - postgres
+  - cluster

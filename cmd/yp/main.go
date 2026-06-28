@@ -14,19 +14,25 @@
  limitations under the License.
 */
 
-package cmd
+// Command yp is the yellow-pages binary. Its role (agent or seed) is selected
+// by config; every node runs the same binary.
+package main
 
-import "github.com/spf13/cobra"
+import (
+	"fmt"
+	"os"
+)
 
-var getCmd = &cobra.Command{
-	Use:   "get",
-	Short: "Get service",
-	Run:   func(cmd *cobra.Command, args []string) {},
-}
+// version is the build version, injected at link time via:
+//
+//	-ldflags "-X main.version=<version>"
+var version = "dev"
 
-func init() {
-	rootCmd.AddCommand(getCmd)
-
-	getCmd.Flags().String("datacenter", "", "Request to specific Datacenter.")
-	getCmd.Flags().StringSlice("tag", nil, "Request to specific tags.")
+func main() {
+	// The command silences cobra's own error printing so we render a single,
+	// actionable line here (validation errors may be several joined messages).
+	if err := newRootCmd().Execute(); err != nil {
+		fmt.Fprintln(os.Stderr, "yp:", err)
+		os.Exit(1)
+	}
 }

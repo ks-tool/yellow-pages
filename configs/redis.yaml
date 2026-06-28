@@ -1,0 +1,8 @@
+name: redis
+address: redis-master
+port: 6379
+metadata:
+  key: value
+tags:
+  - redis
+  - cluster

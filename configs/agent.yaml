@@ -1,0 +1,36 @@
+# yellow-pages agent configuration (M0 bootstrap sample).
+#
+# An agent hosts services, proxies registrations to seeds, and serves local
+# reads. It holds no inbound registry.
+
+role: agent
+node_name: agent-1
+datacenter: dc1
+data_dir: /var/lib/yellow-pages
+
+cluster:
+  name: default
+  # Static seed list. An agent needs either `seeds` or a `discovery` plugin.
+  seeds:
+    - 127.0.0.1:9900
+
+# Per-service lease/tombstone window and how often it is renewed.
+ttl: 30s
+heartbeat_interval: 10s
+# Bounded graceful-shutdown window.
+shutdown_timeout: 15s
+
+# All listener addresses/ports are configurable so yp can co-exist with a real
+# Consul on the same host. Listeners default to loopback.
+listeners:
+  grpc: # native discovery.v1 API (always enabled)
+    address: 127.0.0.1
+    port: 9900
+  consul_http: # Consul-compatible HTTP API
+    enabled: true
+    address: 127.0.0.1
+    port: 8500
+  dns: # Consul-compatible DNS interface
+    enabled: true
+    address: 127.0.0.1
+    port: 8600
