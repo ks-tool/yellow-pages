@@ -104,12 +104,10 @@ func (s *Service) DeregisterService(_ context.Context, req *discoveryv1.Deregist
 }
 
 // Lookup returns the matching service instances, applying the shared health
-// filter when the query asks for healthy-only.
+// filter when the query asks for healthy-only. An empty query name lists every
+// service (the catalog/list path).
 func (s *Service) Lookup(_ context.Context, req *discoveryv1.LookupRequest) (*discoveryv1.LookupResponse, error) {
 	q := protoconv.QueryFromProto(req.GetQuery())
-	if q.Name == "" {
-		return nil, status.Error(codes.InvalidArgument, "query.name is required")
-	}
 	res := s.store.Lookup(q)
 	if q.OnlyHealthy {
 		res.Entries = health.Filter(res.Entries, health.FilterOptions{OnlyPassing: true})

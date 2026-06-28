@@ -100,14 +100,23 @@ func NewProxy(opts ProxyOptions) *Proxy {
 // Register hosts the request's services on this agent and fans the registration
 // out to the seeds. The agent's node identity always replaces the caller's.
 func (p *Proxy) Register(ctx context.Context, req *discoveryv1.RegisterRequest) (*discoveryv1.RegisterResponse, error) {
-	reg := protoconv.RegistrationFromProto(req.GetRegistration())
+	if err := p.RegisterServices(ctx, protoconv.RegistrationFromProto(req.GetRegistration())); err != nil {
+		return nil, err
+	}
+	return &discoveryv1.RegisterResponse{}, nil
+}
+
+// RegisterServices is the model-level register shared by the native gRPC and the
+// Consul HTTP surfaces: it stamps the agent's node identity, fans out to the
+// seeds (k-of-N) and tracks the hosted services.
+func (p *Proxy) RegisterServices(ctx context.Context, reg model.Registration) error {
 	if len(reg.Services) == 0 {
-		return nil, status.Error(codes.InvalidArgument, "registration has no services")
+		return status.Error(codes.InvalidArgument, "registration has no services")
 	}
 	reg.Node = p.node // the agent owns its hosted registrations
 	for i := range reg.Services {
 		if reg.Services[i].Name == "" {
-			return nil, status.Error(codes.InvalidArgument, "service name is required")
+			return status.Error(codes.InvalidArgument, "service name is required")
 		}
 		if reg.Services[i].ID == "" {
 			reg.Services[i].ID = reg.Services[i].Name
@@ -116,7 +125,7 @@ func (p *Proxy) Register(ctx context.Context, req *discoveryv1.RegisterRequest) 
 
 	res := p.client.Register(ctx, reg)
 	if !res.OK(p.quorum) {
-		return nil, status.Errorf(codes.Unavailable,
+		return status.Errorf(codes.Unavailable,
 			"registered on %d/%d seeds (quorum %d)", res.Succeeded, res.Total, p.quorum)
 	}
 
@@ -128,12 +137,12 @@ func (p *Proxy) Register(ctx context.Context, req *discoveryv1.RegisterRequest) 
 
 	if p.prop != nil {
 		for _, s := range reg.Services {
-			// The probe must outlive this RPC (it measures visibility after the
-			// handler returns), so it uses its own bounded context, not ctx.
+			// The probe must outlive this call (it measures visibility after it
+			// returns), so it uses its own bounded context, not ctx.
 			go p.measurePropagation(s.Name, s.ID, true) //nolint:gosec // G118: intentional detached probe
 		}
 	}
-	return &discoveryv1.RegisterResponse{}, nil
+	return nil
 }
 
 // Renew refreshes the agent's leases on the seeds (node-scoped; optionally
@@ -160,31 +169,53 @@ func (p *Proxy) Deregister(ctx context.Context, _ *discoveryv1.DeregisterRequest
 
 // DeregisterService removes one hosted service from the seeds.
 func (p *Proxy) DeregisterService(ctx context.Context, req *discoveryv1.DeregisterServiceRequest) (*discoveryv1.DeregisterServiceResponse, error) {
-	if req.GetServiceId() == "" {
-		return nil, status.Error(codes.InvalidArgument, "service_id is required")
-	}
-	res := p.client.DeregisterService(ctx, p.node.ID, req.GetServiceId())
-	p.mu.Lock()
-	name := p.hosted[req.GetServiceId()].Name
-	delete(p.hosted, req.GetServiceId())
-	p.mu.Unlock()
-	if !res.OK(1) {
-		return nil, status.Errorf(codes.Unavailable, "deregistered on %d/%d seeds", res.Succeeded, res.Total)
-	}
-	if p.prop != nil && name != "" {
-		// Detached probe (must outlive this RPC); see Register.
-		go p.measurePropagation(name, req.GetServiceId(), false) //nolint:gosec // G118: intentional detached probe
+	if err := p.RemoveService(ctx, req.GetServiceId()); err != nil {
+		return nil, err
 	}
 	return &discoveryv1.DeregisterServiceResponse{}, nil
+}
+
+// RemoveService is the model-level single-service deregister shared by the
+// native gRPC and Consul HTTP surfaces.
+func (p *Proxy) RemoveService(ctx context.Context, serviceID string) error {
+	if serviceID == "" {
+		return status.Error(codes.InvalidArgument, "service_id is required")
+	}
+	res := p.client.DeregisterService(ctx, p.node.ID, serviceID)
+	p.mu.Lock()
+	name := p.hosted[serviceID].Name
+	delete(p.hosted, serviceID)
+	p.mu.Unlock()
+	if !res.OK(1) {
+		return status.Errorf(codes.Unavailable, "deregistered on %d/%d seeds", res.Succeeded, res.Total)
+	}
+	if p.prop != nil && name != "" {
+		// Detached probe (must outlive this call); see RegisterServices.
+		go p.measurePropagation(name, serviceID, false) //nolint:gosec // G118: intentional detached probe
+	}
+	return nil
+}
+
+// Resolve returns the merged instance set for q (the Consul read path).
+func (p *Proxy) Resolve(ctx context.Context, q model.Query) (model.LookupResult, error) {
+	return p.lookup(ctx, q)
+}
+
+// Hosted returns the services this agent currently hosts.
+func (p *Proxy) Hosted() []model.ServiceInstance {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := make([]model.ServiceInstance, 0, len(p.hosted))
+	for _, s := range p.hosted {
+		out = append(out, s)
+	}
+	return out
 }
 
 // Lookup serves the query from the cache (bounded staleness), or fans out
 // directly when no cache is configured.
 func (p *Proxy) Lookup(ctx context.Context, req *discoveryv1.LookupRequest) (*discoveryv1.LookupResponse, error) {
 	q := protoconv.QueryFromProto(req.GetQuery())
-	if q.Name == "" {
-		return nil, status.Error(codes.InvalidArgument, "query.name is required")
-	}
 	lr, err := p.lookup(ctx, q)
 	if err != nil {
 		return nil, status.Error(codes.Unavailable, "lookup failed on all seeds")

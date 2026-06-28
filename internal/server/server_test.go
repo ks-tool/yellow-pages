@@ -142,14 +142,6 @@ func TestStatusCodeMapping(t *testing.T) {
 			want: codes.InvalidArgument,
 		},
 		{
-			name: "lookup without name -> InvalidArgument",
-			call: func() error {
-				_, err := cli.Lookup(ctx, &discoveryv1.LookupRequest{Query: &discoveryv1.Query{}})
-				return err
-			},
-			want: codes.InvalidArgument,
-		},
-		{
 			name: "deregister unknown -> NotFound",
 			call: func() error {
 				_, err := cli.Deregister(ctx, &discoveryv1.DeregisterRequest{NodeId: "ghost"})

@@ -340,35 +340,43 @@ func (m *Memory) SetMaintenance(nodeID, serviceID string, enabled bool) error {
 	return nil
 }
 
-// Lookup returns matching entries with lease-derived health. Past-grace records
-// are omitted even before GC physically removes them.
+// Lookup returns matching entries with lease-derived health. An empty Query.Name
+// lists every service (the catalog/list path). Past-grace records are omitted
+// even before GC physically removes them.
 func (m *Memory) Lookup(q model.Query) model.LookupResult {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	now := m.clk.Now()
-	refs := m.byName[q.Name]
-	out := make([]model.ServiceEntry, 0, len(refs))
-	for ref := range refs {
-		n := m.nodes[ref.node]
-		if n == nil {
-			continue
-		}
-		svc := n.services[ref.service]
-		if svc == nil {
-			continue
-		}
+	out := []model.ServiceEntry{}
+	visit := func(n *node, svc *service) {
 		if q.Datacenter != "" && n.meta.Datacenter != q.Datacenter {
-			continue
+			return
 		}
 		if !svc.def.MatchesTags(q.Tags) {
-			continue
+			return
 		}
 		state, expired := m.lease(svc, now)
 		if expired {
-			continue // past grace: invisible, awaiting GC
+			return // past grace: invisible, awaiting GC
 		}
 		out = append(out, m.entry(n.meta, svc, state))
+	}
+
+	if q.Name == "" {
+		for _, n := range m.nodes {
+			for _, svc := range n.services {
+				visit(n, svc)
+			}
+		}
+	} else {
+		for ref := range m.byName[q.Name] {
+			if n := m.nodes[ref.node]; n != nil {
+				if svc := n.services[ref.service]; svc != nil {
+					visit(n, svc)
+				}
+			}
+		}
 	}
 
 	sort.Slice(out, func(i, j int) bool {
