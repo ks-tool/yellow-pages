@@ -18,7 +18,7 @@ PROTOC_GEN_GO_GRPC_VERSION := v1.6.0
 
 export GOFLAGS := -mod=readonly
 
-.PHONY: all build test vet lint buf-lint buf-breaking vuln tidy-check verify proto proto-stubs proto-tools clean help
+.PHONY: all build test e2e vet lint buf-lint buf-breaking vuln tidy-check verify proto proto-stubs proto-tools clean help
 
 all: build ## Build the binary
 
@@ -30,6 +30,10 @@ build: ## Build the yp binary
 test: ## Run tests with the race detector
 	@echo ">> testing (race)"
 	@go test -race ./...
+
+e2e: ## Run the end-to-end suite (separate module; Consul tests need Docker)
+	@echo ">> e2e (needs Docker for the Consul-backed tests)"
+	@cd e2e && go test ./...
 
 vet: ## Run go vet
 	@echo ">> vetting"
