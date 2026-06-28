@@ -192,10 +192,11 @@ func (p *Proxy) Lookup(ctx context.Context, req *discoveryv1.LookupRequest) (*di
 	return protoconv.LookupResultToProto(lr), nil
 }
 
-// Watch streams the merged set for the query and re-sends it whenever the
-// agent's synthesised index advances (a change observed across the seeds). Each
-// round is a fresh snapshot: a put event per current instance, ended by
-// snapshot_done carrying the new index.
+// Watch streams the merged set for the query: an initial snapshot (a put per
+// current instance, ended by snapshot_done) followed by put/delete deltas
+// whenever the agent's synthesised index advances. Deltas are computed by
+// diffing successive merged snapshots, matching the seed's Watch contract so one
+// SDK consumes both.
 func (p *Proxy) Watch(req *discoveryv1.WatchRequest, stream discoveryv1.AgentService_WatchServer) error {
 	if p.watcher == nil {
 		return status.Error(codes.Unimplemented, "watch is not enabled on this node")
@@ -206,32 +207,70 @@ func (p *Proxy) Watch(req *discoveryv1.WatchRequest, stream discoveryv1.AgentSer
 	}
 	ctx := stream.Context()
 
-	var last uint64
+	last := make(map[string]model.ServiceEntry)
+	var lastIdx uint64
 	first := true
 	for {
 		if ctx.Err() != nil {
 			return nil
 		}
-		idx := p.watcher.WaitForChange(ctx, q, last, watchMaxWait)
-		if idx == last && !first {
+		idx := p.watcher.WaitForChange(ctx, q, lastIdx, watchMaxWait)
+		if idx == lastIdx && !first {
 			continue // long-poll timeout with no change
 		}
-		last, first = idx, false
+		lastIdx = idx
 
 		lr, err := p.lookup(ctx, q)
 		if err != nil {
 			continue // transient: keep the stream open and retry on the next change
 		}
+		cur := make(map[string]model.ServiceEntry, len(lr.Entries))
 		for _, e := range lr.Entries {
-			ev := protoconv.ChangeEventToProto(model.ChangeEvent{Type: model.ChangePut, Entry: e})
-			if serr := stream.Send(&discoveryv1.WatchResponse{Event: ev, Index: idx}); serr != nil {
-				return serr
+			cur[entryKey(e)] = e
+		}
+
+		if first {
+			for _, e := range lr.Entries {
+				if err := sendEvent(stream, model.ChangePut, e, idx); err != nil {
+					return err
+				}
+			}
+			if err := stream.Send(&discoveryv1.WatchResponse{SnapshotDone: true, Index: idx}); err != nil {
+				return err
+			}
+			first = false
+		} else {
+			for k, e := range cur {
+				if prev, ok := last[k]; !ok || endpointChanged(prev, e) {
+					if err := sendEvent(stream, model.ChangePut, e, idx); err != nil {
+						return err
+					}
+				}
+			}
+			for k, e := range last {
+				if _, ok := cur[k]; !ok {
+					if err := sendEvent(stream, model.ChangeDelete, e, idx); err != nil {
+						return err
+					}
+				}
 			}
 		}
-		if serr := stream.Send(&discoveryv1.WatchResponse{SnapshotDone: true, Index: idx}); serr != nil {
-			return serr
-		}
+		last = cur
 	}
+}
+
+func sendEvent(stream discoveryv1.AgentService_WatchServer, t model.ChangeType, e model.ServiceEntry, idx uint64) error {
+	return stream.Send(&discoveryv1.WatchResponse{
+		Event: protoconv.ChangeEventToProto(model.ChangeEvent{Type: t, Entry: e}),
+		Index: idx,
+	})
+}
+
+func entryKey(e model.ServiceEntry) string { return e.Node.ID + "\x00" + e.Service.ID }
+
+func endpointChanged(a, b model.ServiceEntry) bool {
+	return a.Service.Address != b.Service.Address || a.Service.Port != b.Service.Port ||
+		a.Service.Generation != b.Service.Generation || a.Health != b.Health
 }
 
 // lookup reads via the cache when configured, else fans out directly.

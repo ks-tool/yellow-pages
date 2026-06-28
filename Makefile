@@ -18,7 +18,7 @@ PROTOC_GEN_GO_GRPC_VERSION := v1.6.0
 
 export GOFLAGS := -mod=readonly
 
-.PHONY: all build test vet lint buf-lint buf-breaking vuln tidy-check verify proto proto-tools clean help
+.PHONY: all build test vet lint buf-lint buf-breaking vuln tidy-check verify proto proto-stubs proto-tools clean help
 
 all: build ## Build the binary
 
@@ -67,6 +67,10 @@ proto: ## Regenerate Go from proto (needs protoc + pinned plugins)
 		--go_out=$(PROTO_DIR) --go_opt=paths=source_relative \
 		--go-grpc_out=$(PROTO_DIR) --go-grpc_opt=paths=source_relative \
 		$(PROTO_FILE)
+
+proto-stubs: ## Generate Java/Python client stubs via buf hosted plugins (needs buf + network)
+	@echo ">> generating cross-language stubs"
+	@buf generate
 
 proto-tools: ## Install the pinned protoc-gen-go[-grpc] plugins
 	@echo ">> installing proto plugins"
