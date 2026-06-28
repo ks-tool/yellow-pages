@@ -79,6 +79,9 @@ type Store interface {
 	Index() uint64
 	// Size returns the number of service instances held.
 	Size() int
+	// Merge applies peer entries with last-writer-wins (anti-entropy, M18) and
+	// returns the number applied.
+	Merge(entries []model.ServiceEntry) int
 }
 
 // Options configures a Memory store.
@@ -264,6 +267,73 @@ func (m *Memory) Register(reg model.Registration) error {
 	m.mu.Unlock()
 	m.emit(events)
 	return nil
+}
+
+// Merge applies peer entries with last-writer-wins semantics for anti-entropy
+// (M18): a service is added if absent, or overwritten only if the incoming
+// (Generation, then LastSeen) strictly wins over the local copy. Unlike Register
+// it PRESERVES the peer's LastSeen (the original heartbeat time), so a pulled
+// snapshot does not artificially extend or shorten a lease. Returns the number
+// of services applied. Concurrent live writes are not lost: a newer local copy
+// always wins the comparison.
+func (m *Memory) Merge(entries []model.ServiceEntry) int {
+	m.mu.Lock()
+	size := m.sizeLocked()
+	var events []model.ChangeEvent
+	applied := 0
+
+	for _, e := range entries {
+		if e.Node.ID == "" || e.Service.ID == "" {
+			continue
+		}
+		n, ok := m.nodes[e.Node.ID]
+		if !ok {
+			n = &node{meta: e.Node, services: make(map[string]*service)}
+			m.nodes[e.Node.ID] = n
+		} else {
+			n.meta = e.Node
+		}
+		def := e.Service
+		def.TTL = m.clampTTL(def.TTL)
+
+		svc, exists := n.services[def.ID]
+		switch {
+		case !exists:
+			if m.opts.MaxServices > 0 && size >= m.opts.MaxServices {
+				continue // drop excess silently; cap is a write-DoS guard
+			}
+			size++
+			idx := m.next()
+			svc = &service{def: def, lastState: model.HealthPassing, createIndex: idx, modifyIndex: idx}
+			n.services[def.ID] = svc
+			m.indexName(e.Node.ID, def)
+			events = append(events, m.putEvent(n.meta, svc))
+			applied++
+		case lwwWins(def, svc.def):
+			oldName := svc.def.Name
+			svc.def = def
+			svc.modifyIndex = m.next()
+			if oldName != def.Name {
+				m.unindexName(e.Node.ID, oldName, def.ID)
+				m.indexName(e.Node.ID, def)
+			}
+			events = append(events, m.putEvent(n.meta, svc))
+			applied++
+		}
+	}
+
+	m.mu.Unlock()
+	m.emit(events)
+	return applied
+}
+
+// lwwWins reports whether incoming strictly beats existing by (Generation, then
+// LastSeen) — the same order as health.MergeLWW.
+func lwwWins(incoming, existing model.ServiceInstance) bool {
+	if incoming.Generation != existing.Generation {
+		return incoming.Generation > existing.Generation
+	}
+	return incoming.LastSeen.After(existing.LastSeen)
 }
 
 // changed reports whether the stored definition differs from the incoming one in

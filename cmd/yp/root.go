@@ -17,6 +17,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -31,6 +32,7 @@ import (
 	"github.com/ks-tool/yellow-pages/internal/consuldns"
 	"github.com/ks-tool/yellow-pages/internal/cred"
 	"github.com/ks-tool/yellow-pages/internal/federation"
+	"github.com/ks-tool/yellow-pages/internal/membership"
 	"github.com/ks-tool/yellow-pages/internal/model"
 	"github.com/ks-tool/yellow-pages/internal/observability"
 	"github.com/ks-tool/yellow-pages/internal/resolver"
@@ -230,20 +232,46 @@ func buildComponents(cfg *config.Config, metrics *observability.Prometheus, clk 
 		})
 		seedNode := model.Node{ID: sec.nodeID, Name: cfg.NodeName, Address: cfg.Listeners.GRPC.Address, Datacenter: cfg.Datacenter}
 		seedReg := consul.NewStoreRegistry(st, seedNode)
+
+		// Membership (M18, v1.x): a seed with peers gates readiness on a join
+		// snapshot, then runs pull-based anti-entropy.
+		var membersFn func(ctx context.Context) any
+		gateReadiness := cfg.Membership.Enabled && len(cfg.Membership.Peers) > 0
+
+		seedServer := server.NewComponent(server.Options{
+			Addr:          cfg.Listeners.GRPC.Addr(),
+			Service:       server.New(st, logger).SetWatcher(watcher),
+			Transport:     transport.New(sec.creds),
+			Metrics:       metrics,
+			Identity:      sec.identity,
+			Authz:         sec.authz,
+			StartNotReady: gateReadiness,
+			Log:           logger,
+		})
 		components = append(components,
-			server.NewComponent(server.Options{
-				Addr:      cfg.Listeners.GRPC.Addr(),
-				Service:   server.New(st, logger).SetWatcher(watcher),
-				Transport: transport.New(sec.creds),
-				Metrics:   metrics,
-				Identity:  sec.identity,
-				Authz:     sec.authz,
-				Log:       logger,
-			}),
+			seedServer,
 			store.NewGCLoop(st, cfg.HeartbeatInterval.Duration(), clk, logger).
 				WithReapHook(func(removed, size int) { prop.AddEvictions(removed); prop.SetRegistrySize(size) }),
 		)
-		if c := consulComponent(cfg, seedReg, seedNode, seeds, watcher, sec, prop, seedReg, logger); c != nil {
+		if gateReadiness {
+			peers, err := seedclient.New(cfg.Membership.Peers, transport.New(sec.creds), cfg.Agent.SeedTimeout.Duration(), logger)
+			if err != nil {
+				return nil, fmt.Errorf("membership: dial peers: %w", err)
+			}
+			syncer := membership.New(membership.Options{
+				Self:     cfg.Listeners.GRPC.Addr(),
+				Peers:    peers,
+				Store:    st,
+				Interval: cfg.Membership.SyncInterval.Duration(),
+				Clock:    clk,
+				Gate:     seedServer.Readiness(),
+				Prop:     prop,
+				Log:      logger,
+			})
+			membersFn = func(ctx context.Context) any { return syncer.Members(ctx) }
+			components = append(components, syncer)
+		}
+		if c := consulComponent(cfg, seedReg, seedNode, seeds, watcher, sec, prop, seedReg, membersFn, logger); c != nil {
 			components = append(components, c)
 		}
 		if c := dnsComponent(cfg, seedReg, prop, logger); c != nil {
@@ -320,7 +348,7 @@ func buildComponents(cfg *config.Config, metrics *observability.Prometheus, clk 
 			seedclient.NewRefreshLoop(cache, cfg.Agent.CacheMaxAge.Duration(), clk, logger),
 			watch.NewFlusher(agentWatcher, cfg.DataDir, cfg.HeartbeatInterval.Duration(), clk, logger),
 		)
-		if c := consulComponent(cfg, proxy, node, seeds, agentWatcher, sec, prop, proxy, logger); c != nil {
+		if c := consulComponent(cfg, proxy, node, seeds, agentWatcher, sec, prop, proxy, nil, logger); c != nil {
 			components = append(components, c)
 		}
 		if c := dnsComponent(cfg, proxy, prop, logger); c != nil {
@@ -367,7 +395,7 @@ func ttlSeconds(d time.Duration) uint32 {
 // consulComponent builds the Consul-compatible HTTP component when its listener
 // is enabled, backed by reg (the seed's Store or the agent's Proxy) and watcher
 // (blocking queries + X-Consul-Index).
-func consulComponent(cfg *config.Config, reg consul.Registry, node model.Node, seeds []string, watcher *watch.Watcher, sec security, prop *observability.Propagation, dumper consul.Dumper, logger *slog.Logger) app.Component {
+func consulComponent(cfg *config.Config, reg consul.Registry, node model.Node, seeds []string, watcher *watch.Watcher, sec security, prop *observability.Propagation, dumper consul.Dumper, members func(ctx context.Context) any, logger *slog.Logger) app.Component {
 	if !cfg.Listeners.ConsulHTTP.Enabled {
 		return nil
 	}
@@ -388,6 +416,7 @@ func consulComponent(cfg *config.Config, reg consul.Registry, node model.Node, s
 		RateLimit: cfg.ConsulRateLimit,
 		Prop:      prop,
 		Dumper:    dumper,
+		Members:   members,
 		Log:       logger,
 	})
 	return consul.NewComponent(cfg.Listeners.ConsulHTTP.Addr(), handler, logger)

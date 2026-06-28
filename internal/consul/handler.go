@@ -98,7 +98,9 @@ type Options struct {
 	Prop *observability.Propagation
 	// Dumper backs the registry-dump admin endpoint (optional).
 	Dumper Dumper
-	Log    *slog.Logger
+	// Members backs /v1/agent/members from real seed membership (optional, M18).
+	Members func(ctx context.Context) any
+	Log     *slog.Logger
 }
 
 // Handler implements the Consul-compatible HTTP API.
@@ -110,6 +112,7 @@ type Handler struct {
 	authz    *cred.Authorizer
 	prop     *observability.Propagation
 	dumper   Dumper
+	members  func(ctx context.Context) any
 	rrl      *rateLimiter
 	waiters  chan struct{}
 	log      *slog.Logger
@@ -131,6 +134,7 @@ func NewHandler(opts Options) http.Handler {
 		authz:    opts.Authz,
 		prop:     opts.Prop,
 		dumper:   opts.Dumper,
+		members:  opts.Members,
 		rrl:      newRateLimiter(opts.RateLimit),
 		waiters:  make(chan struct{}, opts.MaxWaiters),
 		log:      opts.Log,
@@ -161,6 +165,7 @@ func NewHandler(opts Options) http.Handler {
 	mux.HandleFunc("GET /v1/agent/checks", h.agentChecks)
 	mux.HandleFunc("PUT /v1/agent/service/maintenance/{serviceID}", h.serviceMaintenance)
 	mux.HandleFunc("GET /v1/agent/health/service/name/{name}", h.agentHealthByName)
+	mux.HandleFunc("GET /v1/agent/members", h.agentMembers)
 	mux.HandleFunc("PUT /v1/catalog/register", h.catalogRegister)
 	mux.HandleFunc("PUT /v1/catalog/deregister", h.catalogDeregister)
 	mux.HandleFunc("GET /v1/internal/registry-dump", h.registryDump)
@@ -342,6 +347,21 @@ func (h *Handler) agentSelf(w http.ResponseWriter, _ *http.Request) {
 func (h *Handler) catalogDatacenters(w http.ResponseWriter, _ *http.Request) {
 	dcs := append([]string{h.info.Datacenter}, h.info.Federated...)
 	h.writeJSON(w, h.indexFor(model.Query{}), model.ConsistencyDefault, 0, dcs)
+}
+
+// agentMembers reports seed membership: from the real membership detector when
+// wired (M18), else a static self+seeds fallback (all alive).
+func (h *Handler) agentMembers(w http.ResponseWriter, r *http.Request) {
+	if h.members != nil {
+		h.writeJSON(w, h.indexFor(model.Query{}), model.ConsistencyDefault, 0, h.members(r.Context()))
+		return
+	}
+	type member struct{ Name, Addr, Status string }
+	out := []member{{Name: h.info.Name, Addr: h.info.Address, Status: "alive"}}
+	for _, s := range h.info.Seeds {
+		out = append(out, member{Name: s, Addr: s, Status: "alive"})
+	}
+	h.writeJSON(w, h.indexFor(model.Query{}), model.ConsistencyDefault, 0, out)
 }
 
 func (h *Handler) statusLeader(w http.ResponseWriter, _ *http.Request) {

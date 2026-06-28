@@ -46,6 +46,7 @@ type Component struct {
 	readiness   *observability.Readiness
 	drainWindow time.Duration
 	clock       clock.Clock
+	startNotRdy bool          // leave NOT_SERVING after Start (external owner gates)
 	ready       chan struct{} // closed once the listener is bound (or binding failed)
 	lis         net.Listener
 }
@@ -67,6 +68,10 @@ type Options struct {
 	// DrainWindow, when > 0, is how long Stop waits after flipping readiness
 	// NOT_SERVING before it stops accepting (lame-duck). Default 0 (no wait).
 	DrainWindow time.Duration
+	// StartNotReady, when true, leaves the server NOT_SERVING after Start so an
+	// external owner (e.g. the membership snapshot) drives readiness. Default
+	// false: Start marks the server SERVING immediately.
+	StartNotReady bool
 	// Clock is the time seam used for the drain wait (defaults to System).
 	Clock clock.Clock
 	// Log is the structured logger.
@@ -120,6 +125,7 @@ func NewComponent(opts Options) *Component {
 		readiness:   readiness,
 		drainWindow: opts.DrainWindow,
 		clock:       clk,
+		startNotRdy: opts.StartNotReady,
 		ready:       make(chan struct{}),
 	}
 }
@@ -150,9 +156,16 @@ func (c *Component) Start(ctx context.Context) error {
 		return err
 	}
 	c.lis = lis
+	// Mark readiness before unblocking Addr() so a concurrent Stop (which flips
+	// NOT_SERVING) is always sequenced after this SERVING, never racing it.
+	if !c.startNotRdy {
+		c.readiness.SetReady(true)
+	}
 	close(c.ready)
 	c.log.Info("gRPC server serving", "addr", lis.Addr().String())
-	c.readiness.SetReady(true)
+	if c.startNotRdy {
+		c.log.Info("gRPC server NOT_SERVING until external readiness gate (membership snapshot)")
+	}
 
 	errCh := make(chan error, 1)
 	go func() {

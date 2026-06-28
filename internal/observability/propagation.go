@@ -41,6 +41,7 @@ type Propagation struct {
 	blockingWaiters prometheus.Gauge
 	surfaceRequests *prometheus.CounterVec // {surface: consul_http|dns}
 	divergence      prometheus.Gauge
+	convergenceLag  prometheus.Gauge
 }
 
 // NewPropagation registers the propagation SLIs into reg.
@@ -88,12 +89,25 @@ func NewPropagation(reg *prometheus.Registry) *Propagation {
 			Namespace: "yp", Subsystem: "agent", Name: "seed_divergence",
 			Help: "Spread in instance count returned by seeds for the last read (per-seed divergence).",
 		}),
+		convergenceLag: prometheus.NewGauge(prometheus.GaugeOpts{
+			Namespace: "yp", Subsystem: "seed", Name: "convergence_lag",
+			Help: "Entries applied by the last anti-entropy pass (0 once seeds have converged).",
+		}),
 	}
 	reg.MustRegister(
 		p.registerToVisible, p.deregisterToRemoved, p.cacheAge, p.clockSkew,
-		p.registrySize, p.evictions, p.fanout, p.blockingWaiters, p.surfaceRequests, p.divergence,
+		p.registrySize, p.evictions, p.fanout, p.blockingWaiters, p.surfaceRequests,
+		p.divergence, p.convergenceLag,
 	)
 	return p
+}
+
+// SetConvergenceLag records how many entries the last anti-entropy pass applied
+// (0 means the seed has converged with its peers).
+func (p *Propagation) SetConvergenceLag(n int) {
+	if p != nil {
+		p.convergenceLag.Set(float64(n))
+	}
 }
 
 // SetRegistrySize records the seed registry size.
