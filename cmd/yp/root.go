@@ -24,7 +24,12 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ks-tool/yellow-pages/internal/app"
+	"github.com/ks-tool/yellow-pages/internal/clock"
 	"github.com/ks-tool/yellow-pages/internal/config"
+	"github.com/ks-tool/yellow-pages/internal/observability"
+	"github.com/ks-tool/yellow-pages/internal/server"
+	"github.com/ks-tool/yellow-pages/internal/store"
+	"github.com/ks-tool/yellow-pages/internal/transport"
 )
 
 func newRootCmd() *cobra.Command {
@@ -72,14 +77,19 @@ func newRootCmd() *cobra.Command {
 				"grpc", cfg.Listeners.GRPC.Addr(),
 				"consul_http", listenerState(cfg.Listeners.ConsulHTTP),
 				"dns", listenerState(cfg.Listeners.DNS),
+				"metrics", listenerState(cfg.Listeners.Metrics),
 			)
 
-			// M0 has no serving components yet: the binary boots, idles, and
-			// shuts down cleanly on SIGINT/SIGTERM. Components are wired in from
-			// M3 (native gRPC) onward.
+			clk := clock.System()
+			metrics := observability.NewPrometheus()
+
+			components := buildComponents(cfg, metrics, clk, logger)
+
 			application := app.New(
 				app.WithLogger(logger),
+				app.WithClock(clk),
 				app.WithShutdownTimeout(cfg.ShutdownTimeout.Duration()),
+				app.WithComponents(components...),
 			)
 			return application.Run(cmd.Context())
 		},
@@ -94,6 +104,31 @@ func newRootCmd() *cobra.Command {
 	_ = cmd.MarkFlagRequired("config")
 
 	return cmd
+}
+
+// buildComponents wires the serving components for the node's role. M3 serves
+// the native gRPC AgentService from a seed's local Store (single-seed path) plus
+// the optional /metrics endpoint; the agent's local-agent-proxy serving path and
+// the renew/GC loops arrive in M6.
+func buildComponents(cfg *config.Config, metrics *observability.Prometheus, clk clock.Clock, logger *slog.Logger) []app.Component {
+	var components []app.Component
+
+	if cfg.Listeners.Metrics.Enabled {
+		components = append(components,
+			observability.NewMetricsServer(cfg.Listeners.Metrics.Addr(), metrics.Registry(), logger))
+	}
+
+	if cfg.Role == config.RoleSeed {
+		st := store.NewMemory(store.Options{
+			Clock:      clk,
+			DefaultTTL: cfg.TTL.Duration(),
+		})
+		svc := server.New(st, logger)
+		components = append(components,
+			server.NewComponent(cfg.Listeners.GRPC.Addr(), svc, transport.Insecure{}, metrics, logger))
+	}
+
+	return components
 }
 
 func listenerState(l config.Listener) string {

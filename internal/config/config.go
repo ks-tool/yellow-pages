@@ -107,6 +107,9 @@ type Listeners struct {
 	ConsulHTTP Listener `yaml:"consul_http"`
 	// DNS is the Consul-compatible DNS interface (default :8600, off).
 	DNS Listener `yaml:"dns"`
+	// Metrics is the Prometheus /metrics HTTP endpoint (default :9901, off).
+	// RPC telemetry is always recorded; this endpoint exposes it when enabled.
+	Metrics Listener `yaml:"metrics"`
 }
 
 // Listener is a single network listener.
@@ -187,6 +190,7 @@ func (c *Config) applyDefaults() {
 	defaultListener(&c.Listeners.GRPC, 9900)
 	defaultListener(&c.Listeners.ConsulHTTP, 8500)
 	defaultListener(&c.Listeners.DNS, 8600)
+	defaultListener(&c.Listeners.Metrics, 9901)
 
 	if c.Cluster.Discovery != nil && c.Cluster.Discovery.UpdateInterval == 0 {
 		c.Cluster.Discovery.UpdateInterval = Duration(30 * time.Second)
@@ -237,6 +241,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Listeners.DNS.Enabled {
 		errs = append(errs, validateListener("listeners.dns", c.Listeners.DNS)...)
+	}
+	if c.Listeners.Metrics.Enabled {
+		errs = append(errs, validateListener("listeners.metrics", c.Listeners.Metrics)...)
 	}
 
 	if d := c.Cluster.Discovery; d != nil {

@@ -30,3 +30,8 @@ listeners:
     enabled: true
     address: 127.0.0.1
     port: 8600
+  # Prometheus /metrics endpoint (observability-core, M3).
+  metrics:
+    enabled: true
+    address: 127.0.0.1
+    port: 9901
