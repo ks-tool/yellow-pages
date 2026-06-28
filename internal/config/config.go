@@ -72,6 +72,12 @@ type Config struct {
 	// Listeners configures the addresses/ports of every served surface.
 	Listeners Listeners `yaml:"listeners"`
 
+	// MaxServices caps the seed registry size (0 = unlimited); a write past the
+	// cap is rejected (write-DoS guard).
+	MaxServices int `yaml:"max_services"`
+	// ConsulRateLimit caps Consul HTTP requests-per-second per client (0 =
+	// unlimited; read+write DoS guard).
+	ConsulRateLimit int `yaml:"consul_rate_limit"`
 	// TTL is the per-service lease/tombstone window. Default 30s.
 	TTL Duration `yaml:"ttl"`
 	// HeartbeatInterval is how often the agent renews leases. Default 10s.
@@ -105,6 +111,9 @@ type DNSConfig struct {
 	EnableTruncate bool `yaml:"enable_truncate"`
 	// Recursors forward queries outside the served zone (best-effort).
 	Recursors []string `yaml:"recursors"`
+	// RateLimit caps DNS queries-per-second per client (0 = unlimited; RRL,
+	// amplification guard).
+	RateLimit int `yaml:"rate_limit"`
 }
 
 // Agent tunes the agent role's seed fan-out, readiness gate and drain sequence.

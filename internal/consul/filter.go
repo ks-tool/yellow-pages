@@ -51,7 +51,7 @@ func parseFilter(s string) (filterExpr, error) {
 		return nil, err
 	}
 	if p.pos != len(p.tokens) {
-		return nil, fmt.Errorf("filter: unexpected %q", p.tokens[p.pos])
+		return nil, fmt.Errorf("filter: unexpected trailing token %q", p.peek())
 	}
 	return expr, nil
 }

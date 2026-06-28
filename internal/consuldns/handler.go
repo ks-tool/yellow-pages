@@ -47,6 +47,8 @@ type Config struct {
 	OnlyPassing  bool
 	ARecordLimit int
 	Truncate     bool
+	// RateLimit caps queries-per-second per client (0 = unlimited; RRL).
+	RateLimit int
 }
 
 // Handler answers DNS queries for the served zone.
@@ -54,6 +56,7 @@ type Handler struct {
 	resolver Resolver
 	cfg      Config
 	prop     *observability.Propagation
+	rrl      *rateLimiter
 	log      *slog.Logger
 }
 
@@ -65,12 +68,18 @@ func NewHandler(resolver Resolver, cfg Config, prop *observability.Propagation, 
 	if !strings.HasSuffix(cfg.Domain, ".") {
 		cfg.Domain += "."
 	}
-	return &Handler{resolver: resolver, cfg: cfg, prop: prop, log: log}
+	return &Handler{resolver: resolver, cfg: cfg, prop: prop, rrl: newRateLimiter(cfg.RateLimit), log: log}
 }
 
 // ServeDNS implements dns.Handler.
 func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	h.prop.CountRequest("dns")
+	if !h.rrl.allow(clientIP(w)) {
+		resp := new(dns.Msg)
+		resp.SetRcode(req, dns.RcodeRefused)
+		_ = w.WriteMsg(resp)
+		return
+	}
 	resp := new(dns.Msg)
 	resp.SetReply(req)
 	resp.Authoritative = true
@@ -303,6 +312,14 @@ func metaTXT(name string, meta map[string]string, ttl uint32) []dns.RR {
 		})
 	}
 	return out
+}
+
+func clientIP(w dns.ResponseWriter) string {
+	addr := w.RemoteAddr()
+	if host, _, err := net.SplitHostPort(addr.String()); err == nil {
+		return host
+	}
+	return addr.String()
 }
 
 func udpSize(w dns.ResponseWriter, req *dns.Msg) int {

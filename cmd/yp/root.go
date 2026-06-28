@@ -222,9 +222,10 @@ func buildComponents(cfg *config.Config, metrics *observability.Prometheus, clk 
 	case config.RoleSeed:
 		watcher := watch.New(0, clk)
 		st := store.NewMemory(store.Options{
-			Clock:      clk,
-			DefaultTTL: cfg.TTL.Duration(),
-			OnChange:   watcher.Notify,
+			Clock:       clk,
+			DefaultTTL:  cfg.TTL.Duration(),
+			MaxServices: cfg.MaxServices,
+			OnChange:    watcher.Notify,
 		})
 		seedNode := model.Node{ID: sec.nodeID, Name: cfg.NodeName, Address: cfg.Listeners.GRPC.Address, Datacenter: cfg.Datacenter}
 		seedReg := consul.NewStoreRegistry(st, seedNode)
@@ -334,6 +335,7 @@ func dnsComponent(cfg *config.Config, reg consuldns.Resolver, prop *observabilit
 		OnlyPassing:  cfg.DNS.OnlyPassing,
 		ARecordLimit: cfg.DNS.ARecordLimit,
 		Truncate:     cfg.DNS.EnableTruncate,
+		RateLimit:    cfg.DNS.RateLimit,
 	}, prop, logger)
 	return consuldns.NewComponent(cfg.Listeners.DNS.Addr(), handler, logger)
 }
@@ -367,12 +369,13 @@ func consulComponent(cfg *config.Config, reg consul.Registry, node model.Node, s
 			Version:    version,
 			Seeds:      seeds,
 		},
-		Watcher:  watcher,
-		Identity: sec.identity,
-		Authz:    sec.authz,
-		Prop:     prop,
-		Dumper:   dumper,
-		Log:      logger,
+		Watcher:   watcher,
+		Identity:  sec.identity,
+		Authz:     sec.authz,
+		RateLimit: cfg.ConsulRateLimit,
+		Prop:      prop,
+		Dumper:    dumper,
+		Log:       logger,
 	})
 	return consul.NewComponent(cfg.Listeners.ConsulHTTP.Addr(), handler, logger)
 }

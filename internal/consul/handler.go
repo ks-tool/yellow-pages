@@ -89,6 +89,9 @@ type Options struct {
 	Authz    *cred.Authorizer
 	// MaxWaiters caps concurrent blocking queries (0 = default 256).
 	MaxWaiters int
+	// RateLimit caps requests-per-second per client (0 = unlimited; read+write
+	// DoS guard, 429 on exceed).
+	RateLimit int
 	// Prop records the surface/waiter metrics (optional).
 	Prop *observability.Propagation
 	// Dumper backs the registry-dump admin endpoint (optional).
@@ -105,6 +108,7 @@ type Handler struct {
 	authz    *cred.Authorizer
 	prop     *observability.Propagation
 	dumper   Dumper
+	rrl      *rateLimiter
 	waiters  chan struct{}
 	log      *slog.Logger
 }
@@ -125,6 +129,7 @@ func NewHandler(opts Options) http.Handler {
 		authz:    opts.Authz,
 		prop:     opts.Prop,
 		dumper:   opts.Dumper,
+		rrl:      newRateLimiter(opts.RateLimit),
 		waiters:  make(chan struct{}, opts.MaxWaiters),
 		log:      opts.Log,
 	}
@@ -158,9 +163,13 @@ func NewHandler(opts Options) http.Handler {
 	mux.HandleFunc("PUT /v1/catalog/deregister", h.catalogDeregister)
 	mux.HandleFunc("GET /v1/internal/registry-dump", h.registryDump)
 
-	// Count every request to this surface (low-cardinality label).
+	// Count every request to this surface (low-cardinality label) and rate-limit.
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h.prop.CountRequest("consul_http")
+		if !h.rrl.allow(remoteIP(r)) {
+			http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+			return
+		}
 		mux.ServeHTTP(w, r)
 	})
 }

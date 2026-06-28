@@ -43,6 +43,8 @@ var (
 	// ErrInvalid is returned when a registration is malformed (missing node id
 	// or a service without a name).
 	ErrInvalid = errors.New("store: invalid registration")
+	// ErrCapacity is returned when a new registration would exceed MaxServices.
+	ErrCapacity = errors.New("store: registry at capacity")
 )
 
 // Store is the registry contract. Reads (Lookup) return raw matching entries
@@ -94,6 +96,9 @@ type Options struct {
 	// StartIndex resumes the monotonic index from a persisted high-watermark so
 	// the index never regresses across a restart (the "epoch"). Default 0.
 	StartIndex uint64
+	// MaxServices caps the number of service instances (0 = unlimited). A new
+	// registration past the cap is rejected with ErrCapacity (write DoS guard).
+	MaxServices int
 	// OnChange, when set, receives the change events of each mutation (and GC)
 	// after the store lock is released. It is the seam the Watcher builds on (M8).
 	OnChange func([]model.ChangeEvent)
@@ -160,6 +165,10 @@ func (m *Memory) Index() uint64 {
 func (m *Memory) Size() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.sizeLocked()
+}
+
+func (m *Memory) sizeLocked() int {
 	n := 0
 	for _, node := range m.nodes {
 		n += len(node.services)
@@ -199,6 +208,7 @@ func (m *Memory) Register(reg model.Registration) error {
 
 	m.mu.Lock()
 	now := m.clk.Now()
+	size := m.sizeLocked()
 
 	n, ok := m.nodes[reg.Node.ID]
 	if !ok {
@@ -221,6 +231,12 @@ func (m *Memory) Register(reg model.Registration) error {
 		svc, exists := n.services[def.ID]
 		switch {
 		case !exists:
+			if m.opts.MaxServices > 0 && size >= m.opts.MaxServices {
+				m.mu.Unlock()
+				m.emit(events)
+				return ErrCapacity
+			}
+			size++
 			idx := m.next()
 			svc = &service{def: def, lastState: model.HealthPassing, createIndex: idx, modifyIndex: idx}
 			n.services[def.ID] = svc
