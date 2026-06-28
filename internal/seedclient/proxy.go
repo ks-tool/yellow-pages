@@ -29,11 +29,15 @@ import (
 	"github.com/ks-tool/yellow-pages/internal/model"
 	"github.com/ks-tool/yellow-pages/internal/observability"
 	"github.com/ks-tool/yellow-pages/internal/protoconv"
+	"github.com/ks-tool/yellow-pages/internal/watch"
 	discoveryv1 "github.com/ks-tool/yellow-pages/proto/discovery/v1"
 )
 
 // propagationProbeTimeout bounds the async register/deregister SLI probes.
 const propagationProbeTimeout = 30 * time.Second
+
+// watchMaxWait bounds one blocking iteration of the agent's Watch long-poll.
+const watchMaxWait = 10 * time.Minute
 
 // Proxy is the local-agent-proxy: the AgentService that local apps on 127.0.0.1
 // talk to. Writes are stamped with the agent's node identity and fanned out to
@@ -42,12 +46,13 @@ const propagationProbeTimeout = 30 * time.Second
 // deregister them.
 type Proxy struct {
 	discoveryv1.UnimplementedAgentServiceServer
-	client *SeedClient
-	cache  *Cache
-	node   model.Node
-	quorum int
-	prop   *observability.Propagation
-	log    *slog.Logger
+	client  *SeedClient
+	cache   *Cache
+	watcher *watch.Watcher
+	node    model.Node
+	quorum  int
+	prop    *observability.Propagation
+	log     *slog.Logger
 
 	mu     sync.Mutex
 	hosted map[string]model.ServiceInstance // serviceID -> definition
@@ -63,6 +68,9 @@ type ProxyOptions struct {
 	Quorum int
 	// Cache serves reads with bounded staleness; nil reads fan out directly.
 	Cache *Cache
+	// Watcher backs the Watch RPC with the agent's synthesised monotonic index;
+	// nil reports Watch as Unimplemented.
+	Watcher *watch.Watcher
 	// Prop records register-to-visible / deregister-to-removed SLIs (optional).
 	Prop *observability.Propagation
 	// Log is the structured logger.
@@ -78,13 +86,14 @@ func NewProxy(opts ProxyOptions) *Proxy {
 		opts.Log = slog.Default()
 	}
 	return &Proxy{
-		client: opts.Client,
-		cache:  opts.Cache,
-		node:   opts.Node,
-		quorum: opts.Quorum,
-		prop:   opts.Prop,
-		log:    opts.Log,
-		hosted: make(map[string]model.ServiceInstance),
+		client:  opts.Client,
+		cache:   opts.Cache,
+		watcher: opts.Watcher,
+		node:    opts.Node,
+		quorum:  opts.Quorum,
+		prop:    opts.Prop,
+		log:     opts.Log,
+		hosted:  make(map[string]model.ServiceInstance),
 	}
 }
 
@@ -176,20 +185,61 @@ func (p *Proxy) Lookup(ctx context.Context, req *discoveryv1.LookupRequest) (*di
 	if q.Name == "" {
 		return nil, status.Error(codes.InvalidArgument, "query.name is required")
 	}
-
-	var (
-		lr  model.LookupResult
-		err error
-	)
-	if p.cache != nil {
-		lr, err = p.cache.Lookup(ctx, q)
-	} else {
-		lr, err = p.directLookup(ctx, q)
-	}
+	lr, err := p.lookup(ctx, q)
 	if err != nil {
 		return nil, status.Error(codes.Unavailable, "lookup failed on all seeds")
 	}
 	return protoconv.LookupResultToProto(lr), nil
+}
+
+// Watch streams the merged set for the query and re-sends it whenever the
+// agent's synthesised index advances (a change observed across the seeds). Each
+// round is a fresh snapshot: a put event per current instance, ended by
+// snapshot_done carrying the new index.
+func (p *Proxy) Watch(req *discoveryv1.WatchRequest, stream discoveryv1.AgentService_WatchServer) error {
+	if p.watcher == nil {
+		return status.Error(codes.Unimplemented, "watch is not enabled on this node")
+	}
+	q := protoconv.QueryFromProto(req.GetQuery())
+	if q.Name == "" {
+		return status.Error(codes.InvalidArgument, "query.name is required")
+	}
+	ctx := stream.Context()
+
+	var last uint64
+	first := true
+	for {
+		if ctx.Err() != nil {
+			return nil
+		}
+		idx := p.watcher.WaitForChange(ctx, q, last, watchMaxWait)
+		if idx == last && !first {
+			continue // long-poll timeout with no change
+		}
+		last, first = idx, false
+
+		lr, err := p.lookup(ctx, q)
+		if err != nil {
+			continue // transient: keep the stream open and retry on the next change
+		}
+		for _, e := range lr.Entries {
+			ev := protoconv.ChangeEventToProto(model.ChangeEvent{Type: model.ChangePut, Entry: e})
+			if serr := stream.Send(&discoveryv1.WatchResponse{Event: ev, Index: idx}); serr != nil {
+				return serr
+			}
+		}
+		if serr := stream.Send(&discoveryv1.WatchResponse{SnapshotDone: true, Index: idx}); serr != nil {
+			return serr
+		}
+	}
+}
+
+// lookup reads via the cache when configured, else fans out directly.
+func (p *Proxy) lookup(ctx context.Context, q model.Query) (model.LookupResult, error) {
+	if p.cache != nil {
+		return p.cache.Lookup(ctx, q)
+	}
+	return p.directLookup(ctx, q)
 }
 
 // directLookup fans out, merges and applies the health filter (the no-cache path).

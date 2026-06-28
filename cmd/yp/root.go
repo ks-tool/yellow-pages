@@ -34,6 +34,7 @@ import (
 	"github.com/ks-tool/yellow-pages/internal/server"
 	"github.com/ks-tool/yellow-pages/internal/store"
 	"github.com/ks-tool/yellow-pages/internal/transport"
+	"github.com/ks-tool/yellow-pages/internal/watch"
 )
 
 func newRootCmd() *cobra.Command {
@@ -212,14 +213,16 @@ func buildComponents(cfg *config.Config, metrics *observability.Prometheus, clk 
 
 	switch cfg.Role {
 	case config.RoleSeed:
+		watcher := watch.New(0, clk)
 		st := store.NewMemory(store.Options{
 			Clock:      clk,
 			DefaultTTL: cfg.TTL.Duration(),
+			OnChange:   watcher.Notify,
 		})
 		components = append(components,
 			server.NewComponent(server.Options{
 				Addr:      cfg.Listeners.GRPC.Addr(),
-				Service:   server.New(st, logger),
+				Service:   server.New(st, logger).SetWatcher(watcher),
 				Transport: transport.New(sec.creds),
 				Metrics:   metrics,
 				Identity:  sec.identity,
@@ -245,19 +248,22 @@ func buildComponents(cfg *config.Config, metrics *observability.Prometheus, clk 
 			Address:    cfg.Listeners.GRPC.Address,
 			Datacenter: cfg.Datacenter,
 		}
+		agentWatcher := watch.New(watch.LoadBase(cfg.DataDir), clk)
 		cache := seedclient.NewCache(client, seedclient.CacheOptions{
-			MaxAge: cfg.Agent.CacheMaxAge.Duration(),
-			Clock:  clk,
-			Prop:   prop,
-			Log:    logger,
+			MaxAge:   cfg.Agent.CacheMaxAge.Duration(),
+			Clock:    clk,
+			Prop:     prop,
+			OnChange: func(name string) { agentWatcher.NotifyNames(name) },
+			Log:      logger,
 		})
 		proxy := seedclient.NewProxy(seedclient.ProxyOptions{
-			Client: client,
-			Node:   node,
-			Quorum: cfg.Agent.WriteQuorum,
-			Cache:  cache,
-			Prop:   prop,
-			Log:    logger,
+			Client:  client,
+			Node:    node,
+			Quorum:  cfg.Agent.WriteQuorum,
+			Cache:   cache,
+			Watcher: agentWatcher,
+			Prop:    prop,
+			Log:     logger,
 		})
 		// The local-agent-proxy listens on a trusted loopback for local apps;
 		// ownership authz is enforced by the seeds, not here, so the local server
@@ -281,6 +287,7 @@ func buildComponents(cfg *config.Config, metrics *observability.Prometheus, clk 
 			seedclient.NewReadinessProbe(client, grpcComp.Readiness(), cfg.Agent.ReadyMinSeeds, cfg.HeartbeatInterval.Duration(), clk, logger),
 			seedclient.NewRenewLoop(proxy, cfg.HeartbeatInterval.Duration(), clk, logger),
 			seedclient.NewRefreshLoop(cache, cfg.Agent.CacheMaxAge.Duration(), clk, logger),
+			watch.NewFlusher(agentWatcher, cfg.DataDir, cfg.HeartbeatInterval.Duration(), clk, logger),
 		)
 	}
 

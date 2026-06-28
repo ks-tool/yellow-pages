@@ -30,8 +30,10 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/ks-tool/yellow-pages/internal/health"
+	"github.com/ks-tool/yellow-pages/internal/model"
 	"github.com/ks-tool/yellow-pages/internal/protoconv"
 	"github.com/ks-tool/yellow-pages/internal/store"
+	"github.com/ks-tool/yellow-pages/internal/watch"
 	discoveryv1 "github.com/ks-tool/yellow-pages/proto/discovery/v1"
 )
 
@@ -40,8 +42,9 @@ import (
 // the agent's local-agent-proxy fan-out arrives in M6, and Watch in M8.
 type Service struct {
 	discoveryv1.UnimplementedAgentServiceServer
-	store store.Store
-	log   *slog.Logger
+	store   store.Store
+	watcher *watch.Watcher
+	log     *slog.Logger
 }
 
 // New builds the AgentService over st.
@@ -50,6 +53,13 @@ func New(st store.Store, log *slog.Logger) *Service {
 		log = slog.Default()
 	}
 	return &Service{store: st, log: log}
+}
+
+// SetWatcher enables the Watch RPC, backed by w (fed from the Store's change
+// notifier). Without it, Watch reports Unimplemented.
+func (s *Service) SetWatcher(w *watch.Watcher) *Service {
+	s.watcher = w
+	return s
 }
 
 // Register creates or updates the caller's node and services.
@@ -105,6 +115,46 @@ func (s *Service) Lookup(_ context.Context, req *discoveryv1.LookupRequest) (*di
 		res.Entries = health.Filter(res.Entries, health.FilterOptions{OnlyPassing: true})
 	}
 	return protoconv.LookupResultToProto(res), nil
+}
+
+// Watch streams the initial snapshot (a put event per existing instance, ended
+// by snapshot_done) and then live ChangeEvents for the queried service. Register,
+// deregister and expire emit events; renews do not.
+func (s *Service) Watch(req *discoveryv1.WatchRequest, stream discoveryv1.AgentService_WatchServer) error {
+	if s.watcher == nil {
+		return status.Error(codes.Unimplemented, "watch is not enabled on this node")
+	}
+	q := protoconv.QueryFromProto(req.GetQuery())
+	if q.Name == "" {
+		return status.Error(codes.InvalidArgument, "query.name is required")
+	}
+
+	// Subscribe before snapshotting so no change between the two is missed.
+	events, cancel := s.watcher.Subscribe(q)
+	defer cancel()
+
+	res := s.store.Lookup(q)
+	for _, e := range res.Entries {
+		ev := protoconv.ChangeEventToProto(model.ChangeEvent{Type: model.ChangePut, Entry: e})
+		if err := stream.Send(&discoveryv1.WatchResponse{Event: ev, Index: s.watcher.CurrentIndex(q)}); err != nil {
+			return err
+		}
+	}
+	if err := stream.Send(&discoveryv1.WatchResponse{SnapshotDone: true, Index: s.watcher.CurrentIndex(q)}); err != nil {
+		return err
+	}
+
+	for {
+		select {
+		case <-stream.Context().Done():
+			return nil
+		case ev := <-events:
+			resp := &discoveryv1.WatchResponse{Event: protoconv.ChangeEventToProto(ev), Index: ev.Index}
+			if err := stream.Send(resp); err != nil {
+				return err
+			}
+		}
+	}
 }
 
 // mapError translates a Store error into a gRPC status code. Unknown errors

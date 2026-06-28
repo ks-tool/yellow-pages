@@ -163,6 +163,10 @@ message WatchRequest {
 message WatchResponse {
   ChangeEvent event = 1;
   uint64 index = 2;
+  // snapshot_done marks the end of the initial state snapshot (a burst of put
+  // events for the entries that already exist); subsequent responses are live
+  // changes. Added in M8 (append-only).
+  bool snapshot_done = 3;
 }
 
 // AgentService is the native discovery API.

@@ -1159,9 +1159,13 @@ func (x *WatchRequest) GetIndex() uint64 {
 }
 
 type WatchResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Event         *ChangeEvent           `protobuf:"bytes,1,opt,name=event,proto3" json:"event,omitempty"`
-	Index         uint64                 `protobuf:"varint,2,opt,name=index,proto3" json:"index,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Event *ChangeEvent           `protobuf:"bytes,1,opt,name=event,proto3" json:"event,omitempty"`
+	Index uint64                 `protobuf:"varint,2,opt,name=index,proto3" json:"index,omitempty"`
+	// snapshot_done marks the end of the initial state snapshot (a burst of put
+	// events for the entries that already exist); subsequent responses are live
+	// changes. Added in M8 (append-only).
+	SnapshotDone  bool `protobuf:"varint,3,opt,name=snapshot_done,json=snapshotDone,proto3" json:"snapshot_done,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1208,6 +1212,13 @@ func (x *WatchResponse) GetIndex() uint64 {
 		return x.Index
 	}
 	return 0
+}
+
+func (x *WatchResponse) GetSnapshotDone() bool {
+	if x != nil {
+		return x.SnapshotDone
+	}
+	return false
 }
 
 var File_discovery_v1_discovery_proto protoreflect.FileDescriptor
@@ -1294,10 +1305,11 @@ const file_discovery_v1_discovery_proto_rawDesc = "" +
 	"\x05index\x18\x02 \x01(\x04R\x05index\"O\n" +
 	"\fWatchRequest\x12)\n" +
 	"\x05query\x18\x01 \x01(\v2\x13.discovery.v1.QueryR\x05query\x12\x14\n" +
-	"\x05index\x18\x02 \x01(\x04R\x05index\"V\n" +
+	"\x05index\x18\x02 \x01(\x04R\x05index\"{\n" +
 	"\rWatchResponse\x12/\n" +
 	"\x05event\x18\x01 \x01(\v2\x19.discovery.v1.ChangeEventR\x05event\x12\x14\n" +
-	"\x05index\x18\x02 \x01(\x04R\x05index*z\n" +
+	"\x05index\x18\x02 \x01(\x04R\x05index\x12#\n" +
+	"\rsnapshot_done\x18\x03 \x01(\bR\fsnapshotDone*z\n" +
 	"\vHealthState\x12\x1c\n" +
 	"\x18HEALTH_STATE_UNSPECIFIED\x10\x00\x12\x18\n" +
 	"\x14HEALTH_STATE_PASSING\x10\x01\x12\x18\n" +

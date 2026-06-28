@@ -18,7 +18,7 @@ PROTOC_GEN_GO_GRPC_VERSION := v1.6.0
 
 export GOFLAGS := -mod=readonly
 
-.PHONY: all build test vet lint buf-lint vuln tidy-check verify proto proto-tools clean help
+.PHONY: all build test vet lint buf-lint buf-breaking vuln tidy-check verify proto proto-tools clean help
 
 all: build ## Build the binary
 
@@ -43,6 +43,12 @@ buf-lint: ## Lint the proto contract (requires buf)
 	@echo ">> buf lint"
 	@buf lint
 
+buf-breaking: ## Fail on a breaking proto change vs the committed contract (append-only gate)
+	@echo ">> buf breaking"
+	@# Baseline is the branch HEAD, not main: the greenfield rebuild intentionally
+	@# replaced the legacy proto, so main is not a valid discovery.v1 baseline.
+	@buf breaking --against '.git#ref=HEAD'
+
 vuln: ## Run govulncheck
 	@echo ">> vulnerability scan"
 	@GOFLAGS= go tool govulncheck ./...
@@ -52,7 +58,7 @@ tidy-check: ## Fail if go.mod/go.sum are not tidy and verified
 	@go mod verify
 	@GOFLAGS= go mod tidy -diff
 
-verify: tidy-check vet lint buf-lint test vuln ## Run the full local quality gate
+verify: tidy-check vet lint buf-lint buf-breaking test vuln ## Run the full local quality gate
 
 proto: ## Regenerate Go from proto (needs protoc + pinned plugins)
 	@echo ">> generating proto"

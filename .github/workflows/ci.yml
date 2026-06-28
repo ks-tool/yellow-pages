@@ -65,7 +65,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: bufbuild/buf-action@v1
         with:
-          # The breaking-gate is enabled from the first real proto change (M8).
+          # Append-only is enforced locally by `make buf-breaking` (baseline = branch
+          # HEAD). The CI breaking-gate stays off until the greenfield branch lands on
+          # main: main still carries the legacy proto/service_discovery.proto, so a
+          # main baseline would falsely flag its intentional removal. Flip to
+          # `breaking: true` with a main baseline once that merge happens.
           lint: true
           breaking: false
           format: false
