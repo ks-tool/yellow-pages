@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -234,7 +235,7 @@ func buildComponents(cfg *config.Config, metrics *observability.Prometheus, clk 
 			}),
 			store.NewGCLoop(st, cfg.HeartbeatInterval.Duration(), clk, logger),
 		)
-		if c := consulComponent(cfg, storeRegistry{st: st, node: seedNode}, seedNode, seeds, watcher.Index, logger); c != nil {
+		if c := consulComponent(cfg, storeRegistry{st: st, node: seedNode}, seedNode, seeds, watcher, sec, logger); c != nil {
 			components = append(components, c)
 		}
 
@@ -295,7 +296,7 @@ func buildComponents(cfg *config.Config, metrics *observability.Prometheus, clk 
 			seedclient.NewRefreshLoop(cache, cfg.Agent.CacheMaxAge.Duration(), clk, logger),
 			watch.NewFlusher(agentWatcher, cfg.DataDir, cfg.HeartbeatInterval.Duration(), clk, logger),
 		)
-		if c := consulComponent(cfg, proxy, node, seeds, agentWatcher.Index, logger); c != nil {
+		if c := consulComponent(cfg, proxy, node, seeds, agentWatcher, sec, logger); c != nil {
 			components = append(components, c)
 		}
 	}
@@ -304,19 +305,27 @@ func buildComponents(cfg *config.Config, metrics *observability.Prometheus, clk 
 }
 
 // consulComponent builds the Consul-compatible HTTP component when its listener
-// is enabled, backed by reg (the seed's Store or the agent's Proxy).
-func consulComponent(cfg *config.Config, reg consul.Registry, node model.Node, seeds []string, index func() uint64, logger *slog.Logger) app.Component {
+// is enabled, backed by reg (the seed's Store or the agent's Proxy) and watcher
+// (blocking queries + X-Consul-Index).
+func consulComponent(cfg *config.Config, reg consul.Registry, node model.Node, seeds []string, watcher *watch.Watcher, sec security, logger *slog.Logger) app.Component {
 	if !cfg.Listeners.ConsulHTTP.Enabled {
 		return nil
 	}
-	handler := consul.NewHandler(reg, consul.NodeInfo{
-		ID:         node.ID,
-		Name:       cfg.NodeName,
-		Datacenter: cfg.Datacenter,
-		Address:    node.Address,
-		Version:    version,
-		Seeds:      seeds,
-	}, index, logger)
+	handler := consul.NewHandler(consul.Options{
+		Registry: reg,
+		Info: consul.NodeInfo{
+			ID:         node.ID,
+			Name:       cfg.NodeName,
+			Datacenter: cfg.Datacenter,
+			Address:    node.Address,
+			Version:    version,
+			Seeds:      seeds,
+		},
+		Watcher:  watcher,
+		Identity: sec.identity,
+		Authz:    sec.authz,
+		Log:      logger,
+	})
 	return consul.NewComponent(cfg.Listeners.ConsulHTTP.Addr(), handler, logger)
 }
 
@@ -335,8 +344,8 @@ func (s storeRegistry) RemoveService(_ context.Context, serviceID string) error 
 	return s.st.DeregisterService(s.node.ID, serviceID)
 }
 
-func (s storeRegistry) Resolve(_ context.Context, q model.Query) (model.LookupResult, error) {
-	return s.st.Lookup(q), nil
+func (s storeRegistry) Resolve(_ context.Context, q model.Query, _ model.Consistency) (model.LookupResult, time.Duration, error) {
+	return s.st.Lookup(q), 0, nil
 }
 
 // Hosted reports no services: a seed serves the registry but hosts no app

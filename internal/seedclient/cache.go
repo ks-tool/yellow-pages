@@ -94,10 +94,17 @@ func NewCache(client *SeedClient, opts CacheOptions) *Cache {
 	}
 }
 
-// Lookup serves q from the cache when the entry is fresh (within maxAge), else
-// refetches. The health filter (q.OnlyHealthy) is applied AFTER the merge, so
-// an instance healthy on the freshest seed is not dropped by a stale seed.
+// Lookup serves q from the cache (bounded staleness), discarding the entry age.
 func (c *Cache) Lookup(ctx context.Context, q model.Query) (model.LookupResult, error) {
+	lr, _, err := c.LookupWithAge(ctx, q)
+	return lr, err
+}
+
+// LookupWithAge serves q from the cache when the entry is fresh (within maxAge),
+// else refetches, also returning the age of the served entry. The health filter
+// (q.OnlyHealthy) is applied AFTER the merge, so an instance healthy on the
+// freshest seed is not dropped by a stale seed.
+func (c *Cache) LookupWithAge(ctx context.Context, q model.Query) (model.LookupResult, time.Duration, error) {
 	key := keyFor(q)
 
 	c.mu.Lock()
@@ -112,18 +119,19 @@ func (c *Cache) Lookup(ctx context.Context, q model.Query) (model.LookupResult, 
 			if ok {
 				c.log.Warn("serving stale cache after refresh failure", "service", q.Name, "error", err)
 			} else {
-				return model.LookupResult{}, err
+				return model.LookupResult{}, 0, err
 			}
 		}
 	}
 
-	c.prop.SetCacheAge(c.clock.Since(e.fetchedAt))
+	age := c.clock.Since(e.fetchedAt)
+	c.prop.SetCacheAge(age)
 
 	entries := e.merged
 	if q.OnlyHealthy {
 		entries = health.Filter(entries, health.FilterOptions{OnlyPassing: true})
 	}
-	return model.LookupResult{Entries: entries, Index: e.index}, nil
+	return model.LookupResult{Entries: entries, Index: e.index}, age, nil
 }
 
 // fetch fans out (asking seeds for ALL instances so the merge, not a stale

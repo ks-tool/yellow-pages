@@ -54,6 +54,18 @@ func (i Identity) Principal(ctx context.Context) model.Principal {
 	return model.Principal{Anonymous: true}
 }
 
+// PrincipalForToken resolves a raw ACL token to a principal (anonymous when
+// empty or unknown). Used by the Consul HTTP surface, where tokens arrive in
+// headers or the ?token query rather than gRPC metadata.
+func (i Identity) PrincipalForToken(token string) model.Principal {
+	if token != "" {
+		if id, ok := i.tokens[token]; ok {
+			return model.Principal{ID: id, Attributes: map[string]string{"auth": "token"}}
+		}
+	}
+	return model.Principal{Anonymous: true}
+}
+
 // verifiedCommonName returns the CN of the verified client certificate, or "".
 func verifiedCommonName(ctx context.Context) string {
 	p, ok := peer.FromContext(ctx)

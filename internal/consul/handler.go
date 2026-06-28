@@ -23,55 +23,84 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/ks-tool/yellow-pages/internal/cred"
 	"github.com/ks-tool/yellow-pages/internal/health"
 	"github.com/ks-tool/yellow-pages/internal/model"
+	"github.com/ks-tool/yellow-pages/internal/watch"
 )
 
-// Registry is the cluster surface the Consul adapter projects: agent-scoped
-// writes plus merged reads, in domain terms. The agent's Proxy satisfies it
-// structurally; tests can back it with a Store.
+// Registry is the cluster surface the Consul adapter projects. Resolve returns
+// the merged entries and the age of the cache entry they came from.
 type Registry interface {
 	RegisterServices(ctx context.Context, reg model.Registration) error
 	RemoveService(ctx context.Context, serviceID string) error
-	Resolve(ctx context.Context, q model.Query) (model.LookupResult, error)
+	Resolve(ctx context.Context, q model.Query, mode model.Consistency) (model.LookupResult, time.Duration, error)
 	Hosted() []model.ServiceInstance
 }
 
-// NodeInfo is this agent's static identity, rendered into /v1/agent/self,
-// /v1/status/* and the Node fields of catalog/health responses.
+// NodeInfo is this agent's static identity.
 type NodeInfo struct {
 	ID         string
 	Name       string
 	Datacenter string
 	Address    string
 	Version    string
-	Seeds      []string // seed addresses, rendered as addr:8300 peers
+	Seeds      []string
 }
 
-// serverPort is the shim Raft/serf server port Consul clients expect in peers
-// and leader addresses (there is no Raft; it is a stable cosmetic value).
-const serverPort = "8300"
+const (
+	serverPort        = "8300"
+	defaultWait       = 5 * time.Minute
+	maxWait           = 10 * time.Minute
+	defaultMaxWaiters = 256
+)
+
+// Options configures the Consul HTTP handler.
+type Options struct {
+	Registry Registry
+	Info     NodeInfo
+	// Watcher enables blocking queries and the per-query X-Consul-Index.
+	Watcher *watch.Watcher
+	// Identity resolves ACL tokens; Authz enforces write ownership when set to
+	// enforce. Both optional (acl.mode=disabled/allow accept any token).
+	Identity cred.Identity
+	Authz    *cred.Authorizer
+	// MaxWaiters caps concurrent blocking queries (0 = default 256).
+	MaxWaiters int
+	Log        *slog.Logger
+}
 
 // Handler implements the Consul-compatible HTTP API.
 type Handler struct {
-	reg   Registry
-	info  NodeInfo
-	index func() uint64
-	log   *slog.Logger
+	reg      Registry
+	info     NodeInfo
+	watcher  *watch.Watcher
+	identity cred.Identity
+	authz    *cred.Authorizer
+	waiters  chan struct{}
+	log      *slog.Logger
 }
 
-// NewHandler builds the Consul HTTP handler. index supplies X-Consul-Index
-// (the agent's synthesised monotonic index); nil yields a constant 1.
-func NewHandler(reg Registry, info NodeInfo, index func() uint64, log *slog.Logger) http.Handler {
-	if index == nil {
-		index = func() uint64 { return 1 }
+// NewHandler builds the Consul HTTP handler from opts.
+func NewHandler(opts Options) http.Handler {
+	if opts.Log == nil {
+		opts.Log = slog.Default()
 	}
-	if log == nil {
-		log = slog.Default()
+	if opts.MaxWaiters <= 0 {
+		opts.MaxWaiters = defaultMaxWaiters
 	}
-	h := &Handler{reg: reg, info: info, index: index, log: log}
+	h := &Handler{
+		reg:      opts.Registry,
+		info:     opts.Info,
+		watcher:  opts.Watcher,
+		identity: opts.Identity,
+		authz:    opts.Authz,
+		waiters:  make(chan struct{}, opts.MaxWaiters),
+		log:      opts.Log,
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("PUT /v1/agent/service/register", h.registerService)
@@ -88,10 +117,14 @@ func NewHandler(reg Registry, info NodeInfo, index func() uint64, log *slog.Logg
 	return mux
 }
 
+// --- write paths (authz-enforced) ---
+
 func (h *Handler) registerService(w http.ResponseWriter, r *http.Request) {
+	if !h.authorizeWrite(w, r) {
+		return
+	}
 	var in registerInput
-	dec := json.NewDecoder(r.Body) // lenient: unknown fields are ignored
-	if err := dec.Decode(&in); err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil { // lenient: unknown fields ignored
 		http.Error(w, "invalid register body", http.StatusBadRequest)
 		return
 	}
@@ -104,14 +137,8 @@ func (h *Handler) registerService(w http.ResponseWriter, r *http.Request) {
 		id = in.Name
 	}
 	svc := model.ServiceInstance{
-		ID:      id,
-		Name:    in.Name,
-		Address: in.Address,
-		Port:    clampPort(in.Port),
-		Tags:    in.Tags,
-		Meta:    in.Meta,
-		Weights: weightsToModel(in.Weights),
-		TTL:     ttlFromCheck(in.Check),
+		ID: id, Name: in.Name, Address: in.Address, Port: clampPort(in.Port),
+		Tags: in.Tags, Meta: in.Meta, Weights: weightsToModel(in.Weights), TTL: ttlFromCheck(in.Check),
 	}
 	reg := model.Registration{Node: h.node(), Services: []model.ServiceInstance{svc}, Generation: 1}
 	if err := h.reg.RegisterServices(r.Context(), reg); err != nil {
@@ -122,6 +149,9 @@ func (h *Handler) registerService(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) deregisterService(w http.ResponseWriter, r *http.Request) {
+	if !h.authorizeWrite(w, r) {
+		return
+	}
 	if err := h.reg.RemoveService(r.Context(), r.PathValue("serviceID")); err != nil {
 		h.fail(w, err)
 		return
@@ -129,60 +159,25 @@ func (h *Handler) deregisterService(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-func (h *Handler) agentServices(w http.ResponseWriter, r *http.Request) {
-	out := make(map[string]agentService)
-	for _, s := range h.reg.Hosted() {
-		out[s.ID] = agentService{
-			ID: s.ID, Service: s.Name, Tags: orEmpty(s.Tags), Meta: s.Meta,
-			Port: int(s.Port), Address: s.Address, Weights: modelWeights(s.Weights),
-		}
-	}
-	h.writeJSON(w, r, out)
-}
-
-func (h *Handler) agentSelf(w http.ResponseWriter, r *http.Request) {
-	h.writeJSON(w, r, agentSelf{
-		Config: agentSelfConfig{Datacenter: h.info.Datacenter, NodeName: h.info.Name, Version: h.info.Version},
-		Member: agentMember{Name: h.info.Name, Addr: h.info.Address, Port: portNum(serverPort)},
-	})
-}
-
-func (h *Handler) catalogServices(w http.ResponseWriter, r *http.Request) {
-	dc := r.URL.Query().Get("dc")
-	res, err := h.reg.Resolve(r.Context(), model.Query{Datacenter: dc})
-	if err != nil {
-		h.fail(w, err)
-		return
-	}
-	out := map[string][]string{}
-	for _, e := range res.Entries {
-		out[e.Service.Name] = mergeTags(out[e.Service.Name], e.Service.Tags)
-	}
-	h.writeJSON(w, r, out)
-}
+// --- read paths (blocking, filter, consistency) ---
 
 func (h *Handler) catalogService(w http.ResponseWriter, r *http.Request) {
-	q := h.query(r)
-	res, err := h.reg.Resolve(r.Context(), q)
-	if err != nil {
-		h.fail(w, err)
+	entries, idx, mode, age, ok := h.read(w, r)
+	if !ok {
 		return
 	}
-	out := make([]catalogService, 0, len(res.Entries))
-	for _, e := range res.Entries {
+	out := make([]catalogService, 0, len(entries))
+	for _, e := range entries {
 		out = append(out, h.toCatalog(e))
 	}
-	h.writeJSON(w, r, out)
+	h.writeJSON(w, idx, mode, age, out)
 }
 
 func (h *Handler) healthService(w http.ResponseWriter, r *http.Request) {
-	q := h.query(r)
-	res, err := h.reg.Resolve(r.Context(), q)
-	if err != nil {
-		h.fail(w, err)
+	entries, idx, mode, age, ok := h.read(w, r)
+	if !ok {
 		return
 	}
-	entries := res.Entries
 	if r.URL.Query().Has("passing") {
 		entries = health.Filter(entries, health.FilterOptions{OnlyPassing: true})
 	}
@@ -190,36 +185,100 @@ func (h *Handler) healthService(w http.ResponseWriter, r *http.Request) {
 	for _, e := range entries {
 		out = append(out, h.toHealth(e))
 	}
-	h.writeJSON(w, r, out)
+	h.writeJSON(w, idx, mode, age, out)
+}
+
+func (h *Handler) catalogServices(w http.ResponseWriter, r *http.Request) {
+	entries, idx, mode, age, ok := h.read(w, r)
+	if !ok {
+		return
+	}
+	out := map[string][]string{}
+	for _, e := range entries {
+		out[e.Service.Name] = mergeTags(out[e.Service.Name], e.Service.Tags)
+	}
+	h.writeJSON(w, idx, mode, age, out)
 }
 
 func (h *Handler) catalogNodes(w http.ResponseWriter, r *http.Request) {
-	res, err := h.reg.Resolve(r.Context(), model.Query{})
-	if err != nil {
-		h.fail(w, err)
+	entries, idx, mode, age, ok := h.read(w, r)
+	if !ok {
 		return
 	}
 	seen := map[string]struct{}{}
 	out := []node{}
-	for _, e := range res.Entries {
-		if _, ok := seen[e.Node.ID]; ok {
+	for _, e := range entries {
+		if _, dup := seen[e.Node.ID]; dup {
 			continue
 		}
 		seen[e.Node.ID] = struct{}{}
 		out = append(out, toNode(e.Node))
 	}
-	h.writeJSON(w, r, out)
+	h.writeJSON(w, idx, mode, age, out)
 }
 
-func (h *Handler) catalogDatacenters(w http.ResponseWriter, r *http.Request) {
-	h.writeJSON(w, r, []string{h.info.Datacenter})
+// read performs the common blocking + filtered + consistency-aware resolution.
+// It returns the entries, the per-query index, the read mode, the cache age and
+// ok=false when a response (error / 429) was already written.
+func (h *Handler) read(w http.ResponseWriter, r *http.Request) ([]model.ServiceEntry, uint64, model.Consistency, time.Duration, bool) {
+	q := h.query(r)
+	mode := readMode(r)
+
+	filter, err := compileFilter(r)
+	if err != nil {
+		http.Error(w, "invalid filter: "+err.Error(), http.StatusBadRequest)
+		return nil, 0, mode, 0, false
+	}
+
+	minIndex, wait := blockParams(r)
+	if minIndex > 0 && h.watcher != nil {
+		if !h.acquireWaiter() {
+			http.Error(w, "too many blocking queries", http.StatusTooManyRequests)
+			return nil, 0, mode, 0, false
+		}
+		h.watcher.WaitForChange(r.Context(), q, minIndex, wait)
+		h.releaseWaiter()
+	}
+
+	res, age, err := h.reg.Resolve(r.Context(), q, mode)
+	if err != nil {
+		h.fail(w, err)
+		return nil, 0, mode, 0, false
+	}
+	entries := res.Entries
+	if filter != nil {
+		entries = applyFilter(entries, filter)
+	}
+	return entries, h.indexFor(q), mode, age, true
 }
 
-func (h *Handler) statusLeader(w http.ResponseWriter, r *http.Request) {
-	h.writeJSON(w, r, h.leaderAddr())
+func (h *Handler) agentServices(w http.ResponseWriter, _ *http.Request) {
+	out := make(map[string]agentService)
+	for _, s := range h.reg.Hosted() {
+		out[s.ID] = agentService{
+			ID: s.ID, Service: s.Name, Tags: orEmpty(s.Tags), Meta: s.Meta,
+			Port: int(s.Port), Address: s.Address, Weights: modelWeights(s.Weights),
+		}
+	}
+	h.writeJSON(w, h.indexFor(model.Query{}), model.ConsistencyDefault, 0, out)
 }
 
-func (h *Handler) statusPeers(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) agentSelf(w http.ResponseWriter, _ *http.Request) {
+	h.writeJSON(w, h.indexFor(model.Query{}), model.ConsistencyDefault, 0, agentSelf{
+		Config: agentSelfConfig{Datacenter: h.info.Datacenter, NodeName: h.info.Name, Version: h.info.Version},
+		Member: agentMember{Name: h.info.Name, Addr: h.info.Address, Port: portNum(serverPort)},
+	})
+}
+
+func (h *Handler) catalogDatacenters(w http.ResponseWriter, _ *http.Request) {
+	h.writeJSON(w, h.indexFor(model.Query{}), model.ConsistencyDefault, 0, []string{h.info.Datacenter})
+}
+
+func (h *Handler) statusLeader(w http.ResponseWriter, _ *http.Request) {
+	h.writeJSON(w, h.indexFor(model.Query{}), model.ConsistencyDefault, 0, h.leaderAddr())
+}
+
+func (h *Handler) statusPeers(w http.ResponseWriter, _ *http.Request) {
 	peers := []string{}
 	for _, s := range h.info.Seeds {
 		peers = append(peers, hostPortWithServerPort(s))
@@ -227,16 +286,43 @@ func (h *Handler) statusPeers(w http.ResponseWriter, r *http.Request) {
 	if len(peers) == 0 {
 		peers = append(peers, h.leaderAddr())
 	}
-	h.writeJSON(w, r, peers)
+	h.writeJSON(w, h.indexFor(model.Query{}), model.ConsistencyDefault, 0, peers)
 }
 
 // --- helpers ---
 
-func (h *Handler) query(r *http.Request) model.Query {
-	q := model.Query{
-		Name:       r.PathValue("service"),
-		Datacenter: r.URL.Query().Get("dc"),
+func (h *Handler) acquireWaiter() bool {
+	select {
+	case h.waiters <- struct{}{}:
+		return true
+	default:
+		return false
 	}
+}
+
+func (h *Handler) releaseWaiter() { <-h.waiters }
+
+func (h *Handler) authorizeWrite(w http.ResponseWriter, r *http.Request) bool {
+	if h.authz == nil || !h.authz.Enforcing() {
+		return true // disabled/allow: accept the token, do not enforce
+	}
+	p := h.identity.PrincipalForToken(tokenFromHTTP(r))
+	if err := h.authz.Authorize(p, h.info.ID); err != nil {
+		http.Error(w, "permission denied", http.StatusForbidden)
+		return false
+	}
+	return true
+}
+
+func (h *Handler) indexFor(q model.Query) uint64 {
+	if h.watcher != nil {
+		return h.watcher.CurrentIndex(q)
+	}
+	return 1
+}
+
+func (h *Handler) query(r *http.Request) model.Query {
+	q := model.Query{Name: r.PathValue("service"), Datacenter: r.URL.Query().Get("dc")}
 	if tags, ok := r.URL.Query()["tag"]; ok {
 		q.Tags = tags
 	}
@@ -253,6 +339,29 @@ func (h *Handler) leaderAddr() string {
 		addr = "127.0.0.1"
 	}
 	return addr + ":" + serverPort
+}
+
+func (h *Handler) writeJSON(w http.ResponseWriter, index uint64, mode model.Consistency, age time.Duration, v any) {
+	if index < 1 {
+		index = 1
+	}
+	lastContact := "0"
+	if mode == model.ConsistencyStale {
+		lastContact = strconv.FormatInt(age.Milliseconds(), 10)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Consul-Index", strconv.FormatUint(index, 10))
+	w.Header().Set("X-Consul-KnownLeader", "true")
+	w.Header().Set("X-Consul-LastContact", lastContact)
+	w.WriteHeader(http.StatusOK)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		h.log.Warn("consul: encode response", "error", err)
+	}
+}
+
+func (h *Handler) fail(w http.ResponseWriter, err error) {
+	h.log.Warn("consul: request failed", "error", err)
+	http.Error(w, err.Error(), http.StatusInternalServerError)
 }
 
 func (h *Handler) toCatalog(e model.ServiceEntry) catalogService {
@@ -279,20 +388,16 @@ func (h *Handler) toHealth(e model.ServiceEntry) healthServiceEntry {
 	}
 }
 
-// synthChecks builds the serfHealth node check, the per-service check, and a
-// _service_maintenance critical check when the instance is in maintenance.
 func synthChecks(e model.ServiceEntry) []healthCheck {
 	nodeStatus := "passing"
-	svcStatus := healthStatus(e.Health)
 	if e.Health == model.HealthCritical {
-		// An expired (critical) lease also fails the node liveness check.
 		nodeStatus = "critical"
 	}
 	checks := []healthCheck{
 		{Node: nodeName(e.Node), CheckID: "serfHealth", Name: "Serf Health Status", Status: nodeStatus},
 		{
 			Node: nodeName(e.Node), CheckID: "service:" + e.Service.ID, Name: "Service '" + e.Service.Name + "' check",
-			Status: svcStatus, ServiceID: e.Service.ID, ServiceName: e.Service.Name,
+			Status: healthStatus(e.Health), ServiceID: e.Service.ID, ServiceName: e.Service.Name,
 		},
 	}
 	if e.Maintenance {
@@ -304,28 +409,68 @@ func synthChecks(e model.ServiceEntry) []healthCheck {
 	return checks
 }
 
-func (h *Handler) writeJSON(w http.ResponseWriter, _ *http.Request, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Consul-Index", strconv.FormatUint(h.indexValue(), 10))
-	w.Header().Set("X-Consul-KnownLeader", "true")
-	w.Header().Set("X-Consul-LastContact", "0")
-	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(v); err != nil {
-		h.log.Warn("consul: encode response", "error", err)
+// --- request parsing ---
+
+func readMode(r *http.Request) model.Consistency {
+	q := r.URL.Query()
+	switch {
+	case q.Has("consistent"):
+		return model.ConsistencyConsistent
+	case q.Has("stale"):
+		return model.ConsistencyStale
+	default:
+		return model.ConsistencyDefault
 	}
 }
 
-func (h *Handler) indexValue() uint64 {
-	if i := h.index(); i > 0 {
-		return i
+func blockParams(r *http.Request) (minIndex uint64, wait time.Duration) {
+	q := r.URL.Query()
+	if v := q.Get("index"); v != "" {
+		minIndex, _ = strconv.ParseUint(v, 10, 64)
 	}
-	return 1
+	wait = defaultWait
+	if v := q.Get("wait"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			wait = d
+		}
+	}
+	if wait > maxWait {
+		wait = maxWait
+	}
+	// Consul adds wait/16 jitter; we clamp deterministically (jitter would only
+	// spread load and is unnecessary for correctness).
+	return minIndex, wait
 }
 
-func (h *Handler) fail(w http.ResponseWriter, err error) {
-	h.log.Warn("consul: request failed", "error", err)
-	http.Error(w, err.Error(), http.StatusInternalServerError)
+func compileFilter(r *http.Request) (filterExpr, error) {
+	f := r.URL.Query().Get("filter")
+	if strings.TrimSpace(f) == "" {
+		return nil, nil
+	}
+	return parseFilter(f)
 }
+
+func applyFilter(entries []model.ServiceEntry, f filterExpr) []model.ServiceEntry {
+	out := make([]model.ServiceEntry, 0, len(entries))
+	for _, e := range entries {
+		if f(viewOf(e)) {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+func tokenFromHTTP(r *http.Request) string {
+	if a := r.Header.Get("Authorization"); strings.HasPrefix(a, "Bearer ") {
+		return strings.TrimSpace(strings.TrimPrefix(a, "Bearer "))
+	}
+	if t := r.Header.Get("X-Consul-Token"); t != "" {
+		return t
+	}
+	return r.URL.Query().Get("token")
+}
+
+// --- model -> consul render helpers ---
 
 func toNode(n model.Node) node {
 	return node{ID: n.ID, Node: nodeName(n), Address: n.Address, Datacenter: n.Datacenter, Meta: n.Meta, TaggedAddresses: n.TaggedAddresses}
@@ -372,11 +517,10 @@ func ttlFromCheck(c *checkInput) time.Duration {
 	if c == nil || c.TTL == "" {
 		return 0
 	}
-	d, err := time.ParseDuration(c.TTL)
-	if err != nil || d < 0 {
-		return 0
+	if d, err := time.ParseDuration(c.TTL); err == nil && d >= 0 {
+		return d
 	}
-	return d
+	return 0
 }
 
 func mergeTags(into, add []string) []string {
@@ -416,17 +560,8 @@ func portNum(s string) int { n, _ := strconv.Atoi(s); return n }
 
 func hostPortWithServerPort(seed string) string {
 	host := seed
-	if i := lastColon(seed); i >= 0 {
+	if i := strings.LastIndexByte(seed, ':'); i >= 0 {
 		host = seed[:i]
 	}
 	return host + ":" + serverPort
-}
-
-func lastColon(s string) int {
-	for i := len(s) - 1; i >= 0; i-- {
-		if s[i] == ':' {
-			return i
-		}
-	}
-	return -1
 }

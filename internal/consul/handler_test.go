@@ -30,13 +30,16 @@ import (
 	"github.com/ks-tool/yellow-pages/internal/clock"
 	"github.com/ks-tool/yellow-pages/internal/model"
 	"github.com/ks-tool/yellow-pages/internal/store"
+	"github.com/ks-tool/yellow-pages/internal/watch"
 )
 
 // testRegistry backs the handler with a Store and tracks hosted services.
 type testRegistry struct {
-	st     *store.Memory
-	node   model.Node
-	hosted map[string]model.ServiceInstance
+	st       *store.Memory
+	node     model.Node
+	hosted   map[string]model.ServiceInstance
+	age      time.Duration     // reported as the cache age (?stale -> LastContact)
+	lastMode model.Consistency // recorded by Resolve for assertions
 }
 
 func newRegistry(st *store.Memory, node model.Node) *testRegistry {
@@ -56,8 +59,9 @@ func (r *testRegistry) RemoveService(_ context.Context, id string) error {
 	return r.st.DeregisterService(r.node.ID, id)
 }
 
-func (r *testRegistry) Resolve(_ context.Context, q model.Query) (model.LookupResult, error) {
-	return r.st.Lookup(q), nil
+func (r *testRegistry) Resolve(_ context.Context, q model.Query, mode model.Consistency) (model.LookupResult, time.Duration, error) {
+	r.lastMode = mode
+	return r.st.Lookup(q), r.age, nil
 }
 
 func (r *testRegistry) Hosted() []model.ServiceInstance {
@@ -69,14 +73,21 @@ func (r *testRegistry) Hosted() []model.ServiceInstance {
 }
 
 func newHandler(t *testing.T) (http.Handler, *testRegistry, *store.Memory) {
+	h, reg, st, _ := newHandlerWith(t, Options{})
+	return h, reg, st
+}
+
+func newHandlerWith(t *testing.T, opts Options) (http.Handler, *testRegistry, *store.Memory, *watch.Watcher) {
 	t.Helper()
-	st := store.NewMemory(store.Options{Clock: clock.System(), DefaultTTL: 30 * time.Second})
+	w := watch.New(0, clock.System())
+	st := store.NewMemory(store.Options{Clock: clock.System(), DefaultTTL: 30 * time.Second, OnChange: w.Notify})
 	node := model.Node{ID: "agent-1", Name: "node-a", Address: "10.0.0.5", Datacenter: "dc1"}
 	reg := newRegistry(st, node)
-	h := NewHandler(reg, NodeInfo{
-		ID: "agent-1", Name: "node-a", Datacenter: "dc1", Address: "10.0.0.5", Version: "1.2.3", Seeds: []string{"10.0.0.9:9900"},
-	}, func() uint64 { return 42 }, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	return h, reg, st
+	opts.Registry = reg
+	opts.Info = NodeInfo{ID: "agent-1", Name: "node-a", Datacenter: "dc1", Address: "10.0.0.5", Version: "1.2.3", Seeds: []string{"10.0.0.9:9900"}}
+	opts.Watcher = w
+	opts.Log = slog.New(slog.NewTextHandler(io.Discard, nil))
+	return NewHandler(opts), reg, st, w
 }
 
 func do(t *testing.T, h http.Handler, method, path, body string) *httptest.ResponseRecorder {

@@ -196,9 +196,15 @@ func (p *Proxy) RemoveService(ctx context.Context, serviceID string) error {
 	return nil
 }
 
-// Resolve returns the merged instance set for q (the Consul read path).
-func (p *Proxy) Resolve(ctx context.Context, q model.Query) (model.LookupResult, error) {
-	return p.lookup(ctx, q)
+// Resolve returns the merged instance set for q under the given consistency
+// mode, plus the age of the cache entry it came from (0 for a fresh fan-out).
+// ConsistencyConsistent bypasses the cache; the others serve it.
+func (p *Proxy) Resolve(ctx context.Context, q model.Query, mode model.Consistency) (model.LookupResult, time.Duration, error) {
+	if mode == model.ConsistencyConsistent || p.cache == nil {
+		lr, err := p.directLookup(ctx, q)
+		return lr, 0, err
+	}
+	return p.cache.LookupWithAge(ctx, q)
 }
 
 // Hosted returns the services this agent currently hosts.

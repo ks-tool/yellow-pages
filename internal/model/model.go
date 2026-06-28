@@ -122,6 +122,21 @@ type LookupResult struct {
 	Index   uint64
 }
 
+// Consistency selects the read posture for a cluster read. It is honoured by the
+// read path (agent cache vs synchronous fan-out) and shapes the Consul
+// X-Consul-LastContact header.
+type Consistency int
+
+const (
+	// ConsistencyDefault is the normal cache-backed read.
+	ConsistencyDefault Consistency = iota
+	// ConsistencyStale reads from cache and reports its age (Consul ?stale).
+	ConsistencyStale
+	// ConsistencyConsistent forces a synchronous fan-out, bypassing the cache
+	// (Consul ?consistent; best-effort freshness, not linearizability).
+	ConsistencyConsistent
+)
+
 // Query selects service instances by exact name with optional filters.
 type Query struct {
 	// Name is matched exactly (not by prefix).
