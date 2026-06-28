@@ -28,6 +28,7 @@ import (
 	"github.com/ks-tool/yellow-pages/internal/config"
 	"github.com/ks-tool/yellow-pages/internal/cred"
 	"github.com/ks-tool/yellow-pages/internal/observability"
+	"github.com/ks-tool/yellow-pages/internal/resolver"
 	"github.com/ks-tool/yellow-pages/internal/server"
 	"github.com/ks-tool/yellow-pages/internal/store"
 	"github.com/ks-tool/yellow-pages/internal/transport"
@@ -88,6 +89,16 @@ func newRootCmd() *cobra.Command {
 				"dns", listenerState(cfg.Listeners.DNS),
 				"metrics", listenerState(cfg.Listeners.Metrics),
 			)
+
+			// Resolve the seed set (static + optional plugin). The SeedClient
+			// consumes the provider from M6; here we surface it at startup. A
+			// resolution failure is non-fatal (the merge is non-destructive).
+			provider := buildSeedProvider(cfg, logger)
+			if seeds, rerr := provider.Seeds(cmd.Context()); rerr != nil {
+				logger.Warn("seed resolution failed at startup", "error", rerr)
+			} else {
+				logger.Info("seeds resolved", "count", len(seeds), "seeds", seeds)
+			}
 
 			clk := clock.System()
 			metrics := observability.NewPrometheus()
@@ -162,6 +173,22 @@ func setupSecurity(cfg *config.Config, logger *slog.Logger) (security, error) {
 		identity: cred.NewIdentity(tokens),
 		authz:    cred.NewAuthorizer(mode),
 	}, nil
+}
+
+// buildSeedProvider builds the SeedProvider from config: the static list plus,
+// when configured, the discovery plugin, combined with a non-destructive merge.
+func buildSeedProvider(cfg *config.Config, logger *slog.Logger) resolver.SeedProvider {
+	var providers []resolver.SeedProvider
+	if len(cfg.Cluster.Seeds) > 0 {
+		providers = append(providers, resolver.NewStatic(cfg.Cluster.Seeds))
+	}
+	if d := cfg.Cluster.Discovery; d != nil {
+		providers = append(providers, resolver.NewPlugin(resolver.PluginConfig{
+			Path:    d.Name,
+			Options: d.Options,
+		}))
+	}
+	return resolver.NewMerged(logger, providers...)
 }
 
 // buildComponents wires the serving components for the node's role. M3/M4 serve
