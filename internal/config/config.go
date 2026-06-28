@@ -82,6 +82,26 @@ type Config struct {
 	ACL ACL `yaml:"acl"`
 	// Agent tunes the agent's seed fan-out, readiness and drain behaviour.
 	Agent Agent `yaml:"agent"`
+	// DNS configures the Consul-compatible DNS interface (M12).
+	DNS DNSConfig `yaml:"dns"`
+}
+
+// DNSConfig configures the Consul DNS interface (the listener address/port is
+// configured under listeners.dns).
+type DNSConfig struct {
+	// Domain is the served zone (default "consul."; a trailing dot is enforced).
+	Domain string `yaml:"domain"`
+	// ServiceTTL / NodeTTL are the record TTLs in seconds (default 0).
+	ServiceTTL Duration `yaml:"service_ttl"`
+	NodeTTL    Duration `yaml:"node_ttl"`
+	// OnlyPassing drops warning instances too (default keeps warning as passing).
+	OnlyPassing bool `yaml:"only_passing"`
+	// ARecordLimit caps A/AAAA records per answer (0 = no limit).
+	ARecordLimit int `yaml:"a_record_limit"`
+	// EnableTruncate sets the TC bit when a UDP answer overflows (default true).
+	EnableTruncate bool `yaml:"enable_truncate"`
+	// Recursors forward queries outside the served zone (best-effort).
+	Recursors []string `yaml:"recursors"`
 }
 
 // Agent tunes the agent role's seed fan-out, readiness gate and drain sequence.
@@ -268,6 +288,15 @@ func (c *Config) applyDefaults() {
 	if c.Agent.CacheMaxAge == 0 {
 		c.Agent.CacheMaxAge = Duration(5 * time.Second)
 	}
+
+	if c.DNS.Domain == "" {
+		c.DNS.Domain = "consul."
+	} else if !strings.HasSuffix(c.DNS.Domain, ".") {
+		c.DNS.Domain += "."
+	}
+	// Truncation defaults on (amplification safety); it is forced rather than
+	// configurable-off.
+	c.DNS.EnableTruncate = true
 }
 
 func defaultListener(l *Listener, port uint16) {

@@ -29,6 +29,7 @@ import (
 	"github.com/ks-tool/yellow-pages/internal/clock"
 	"github.com/ks-tool/yellow-pages/internal/config"
 	"github.com/ks-tool/yellow-pages/internal/consul"
+	"github.com/ks-tool/yellow-pages/internal/consuldns"
 	"github.com/ks-tool/yellow-pages/internal/cred"
 	"github.com/ks-tool/yellow-pages/internal/model"
 	"github.com/ks-tool/yellow-pages/internal/observability"
@@ -223,6 +224,7 @@ func buildComponents(cfg *config.Config, metrics *observability.Prometheus, clk 
 			OnChange:   watcher.Notify,
 		})
 		seedNode := model.Node{ID: sec.nodeID, Name: cfg.NodeName, Address: cfg.Listeners.GRPC.Address, Datacenter: cfg.Datacenter}
+		seedReg := storeRegistry{st: st, node: seedNode}
 		components = append(components,
 			server.NewComponent(server.Options{
 				Addr:      cfg.Listeners.GRPC.Addr(),
@@ -235,7 +237,10 @@ func buildComponents(cfg *config.Config, metrics *observability.Prometheus, clk 
 			}),
 			store.NewGCLoop(st, cfg.HeartbeatInterval.Duration(), clk, logger),
 		)
-		if c := consulComponent(cfg, storeRegistry{st: st, node: seedNode}, seedNode, seeds, watcher, sec, logger); c != nil {
+		if c := consulComponent(cfg, seedReg, seedNode, seeds, watcher, sec, logger); c != nil {
+			components = append(components, c)
+		}
+		if c := dnsComponent(cfg, seedReg, logger); c != nil {
 			components = append(components, c)
 		}
 
@@ -299,9 +304,41 @@ func buildComponents(cfg *config.Config, metrics *observability.Prometheus, clk 
 		if c := consulComponent(cfg, proxy, node, seeds, agentWatcher, sec, logger); c != nil {
 			components = append(components, c)
 		}
+		if c := dnsComponent(cfg, proxy, logger); c != nil {
+			components = append(components, c)
+		}
 	}
 
 	return components, nil
+}
+
+// dnsComponent builds the Consul DNS component when its listener is enabled.
+func dnsComponent(cfg *config.Config, reg consuldns.Resolver, logger *slog.Logger) app.Component {
+	if !cfg.Listeners.DNS.Enabled {
+		return nil
+	}
+	handler := consuldns.NewHandler(reg, consuldns.Config{
+		Domain:       cfg.DNS.Domain,
+		Datacenter:   cfg.Datacenter,
+		ServiceTTL:   ttlSeconds(cfg.DNS.ServiceTTL.Duration()),
+		NodeTTL:      ttlSeconds(cfg.DNS.NodeTTL.Duration()),
+		OnlyPassing:  cfg.DNS.OnlyPassing,
+		ARecordLimit: cfg.DNS.ARecordLimit,
+		Truncate:     cfg.DNS.EnableTruncate,
+	}, logger)
+	return consuldns.NewComponent(cfg.Listeners.DNS.Addr(), handler, logger)
+}
+
+func ttlSeconds(d time.Duration) uint32 {
+	s := d / time.Second
+	switch {
+	case s < 0:
+		return 0
+	case s > 0xffffffff:
+		return 0xffffffff
+	default:
+		return uint32(s) //nolint:gosec // clamped to [0, MaxUint32] above
+	}
 }
 
 // consulComponent builds the Consul-compatible HTTP component when its listener

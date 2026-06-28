@@ -3,6 +3,7 @@ module github.com/ks-tool/yellow-pages
 go 1.26.4
 
 require (
+	github.com/miekg/dns v1.1.72
 	github.com/prometheus/client_golang v1.23.2
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/sync v0.21.0
