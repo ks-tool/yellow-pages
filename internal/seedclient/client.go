@@ -34,6 +34,7 @@ import (
 
 	"github.com/ks-tool/yellow-pages/internal/health"
 	"github.com/ks-tool/yellow-pages/internal/model"
+	"github.com/ks-tool/yellow-pages/internal/observability"
 	"github.com/ks-tool/yellow-pages/internal/protoconv"
 	"github.com/ks-tool/yellow-pages/internal/transport"
 	discoveryv1 "github.com/ks-tool/yellow-pages/proto/discovery/v1"
@@ -66,8 +67,12 @@ type seedConn struct {
 type SeedClient struct {
 	conns       []seedConn
 	seedTimeout time.Duration
+	prop        *observability.Propagation
 	log         *slog.Logger
 }
+
+// SetPropagation attaches the propagation SLIs (clock-skew estimate). Optional.
+func (c *SeedClient) SetPropagation(p *observability.Propagation) { c.prop = p }
 
 // New dials every seed through the transport (its credentials are already baked
 // in) and returns a SeedClient. seedTimeout bounds each per-seed RPC.
@@ -227,7 +232,47 @@ func (c *SeedClient) Lookup(ctx context.Context, q model.Query) (model.LookupRes
 	if okCount == 0 {
 		return model.LookupResult{}, fmt.Errorf("seedclient: lookup failed on all seeds: %w", errors.Join(errs...))
 	}
+	c.prop.SetClockSkew(estimateSkew(all))
 	return model.LookupResult{Entries: health.MergeLWW(all), Index: maxIndex}, nil
+}
+
+// estimateSkew approximates the clock skew between seeds: for one registration
+// (same node, service and generation) seen on several seeds, the spread of the
+// server-stamped last_seen reflects clock skew (plus fan-out jitter). The max
+// spread across registrations is reported. It is a coarse estimate by design —
+// generation, not last_seen, decides the merge.
+func estimateSkew(entries []model.ServiceEntry) time.Duration {
+	type key struct {
+		node, service string
+		generation    uint64
+	}
+	type span struct{ min, max time.Time }
+	spans := make(map[key]*span)
+	for _, e := range entries {
+		ts := e.Service.LastSeen
+		if ts.IsZero() {
+			continue
+		}
+		k := key{e.Node.ID, e.Service.ID, e.Service.Generation}
+		s, ok := spans[k]
+		if !ok {
+			spans[k] = &span{min: ts, max: ts}
+			continue
+		}
+		if ts.Before(s.min) {
+			s.min = ts
+		}
+		if ts.After(s.max) {
+			s.max = ts
+		}
+	}
+	var maxSpread time.Duration
+	for _, s := range spans {
+		if d := s.max.Sub(s.min); d > maxSpread {
+			maxSpread = d
+		}
+	}
+	return maxSpread
 }
 
 // Reachable returns how many seeds currently report SERVING on grpc.health.v1.

@@ -237,13 +237,28 @@ func buildComponents(cfg *config.Config, metrics *observability.Prometheus, clk 
 		if err != nil {
 			return nil, err
 		}
+		prop := observability.NewPropagation(metrics.Registry())
+		client.SetPropagation(prop)
 		node := model.Node{
 			ID:         sec.nodeID,
 			Name:       cfg.NodeName,
 			Address:    cfg.Listeners.GRPC.Address,
 			Datacenter: cfg.Datacenter,
 		}
-		proxy := seedclient.NewProxy(client, node, cfg.Agent.WriteQuorum, logger)
+		cache := seedclient.NewCache(client, seedclient.CacheOptions{
+			MaxAge: cfg.Agent.CacheMaxAge.Duration(),
+			Clock:  clk,
+			Prop:   prop,
+			Log:    logger,
+		})
+		proxy := seedclient.NewProxy(seedclient.ProxyOptions{
+			Client: client,
+			Node:   node,
+			Quorum: cfg.Agent.WriteQuorum,
+			Cache:  cache,
+			Prop:   prop,
+			Log:    logger,
+		})
 		// The local-agent-proxy listens on a trusted loopback for local apps;
 		// ownership authz is enforced by the seeds, not here, so the local server
 		// runs with authz disabled (audit still records writes).
@@ -265,6 +280,7 @@ func buildComponents(cfg *config.Config, metrics *observability.Prometheus, clk 
 			grpcComp,
 			seedclient.NewReadinessProbe(client, grpcComp.Readiness(), cfg.Agent.ReadyMinSeeds, cfg.HeartbeatInterval.Duration(), clk, logger),
 			seedclient.NewRenewLoop(proxy, cfg.HeartbeatInterval.Duration(), clk, logger),
+			seedclient.NewRefreshLoop(cache, cfg.Agent.CacheMaxAge.Duration(), clk, logger),
 		)
 	}
 

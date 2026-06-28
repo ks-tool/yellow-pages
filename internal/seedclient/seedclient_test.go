@@ -209,7 +209,7 @@ func TestRenewMaintainsLease(t *testing.T) {
 	seedClock := clock.NewFake(epoch)
 	addr, st := startSeed(t, seedClock)
 	client := newClient(t, []string{addr}, 2*time.Second)
-	proxy := NewProxy(client, model.Node{ID: "agent-1", Datacenter: "dc1"}, 1, discardLogger())
+	proxy := NewProxy(ProxyOptions{Client: client, Node: model.Node{ID: "agent-1", Datacenter: "dc1"}, Quorum: 1, Log: discardLogger()})
 
 	if _, err := proxy.Register(context.Background(), &discoveryv1.RegisterRequest{
 		Registration: &discoveryv1.Registration{
@@ -245,7 +245,7 @@ func TestRenewLoopComponentRenewsOnTick(t *testing.T) {
 	seedClock := clock.NewFake(epoch)
 	addr, st := startSeed(t, seedClock)
 	client := newClient(t, []string{addr}, 2*time.Second)
-	proxy := NewProxy(client, model.Node{ID: "agent-1", Datacenter: "dc1"}, 1, discardLogger())
+	proxy := NewProxy(ProxyOptions{Client: client, Node: model.Node{ID: "agent-1", Datacenter: "dc1"}, Quorum: 1, Log: discardLogger()})
 	if _, err := proxy.Register(context.Background(), &discoveryv1.RegisterRequest{
 		Registration: &discoveryv1.Registration{Services: []*discoveryv1.Service{{Name: "web", TtlSeconds: 30}}, Generation: 1},
 	}); err != nil {
@@ -310,7 +310,7 @@ func TestDeregistrarRemovesFromSeeds(t *testing.T) {
 	t.Parallel()
 	addr, st := startSeed(t, clock.System())
 	client := newClient(t, []string{addr}, 2*time.Second)
-	proxy := NewProxy(client, model.Node{ID: "agent-1", Datacenter: "dc1"}, 1, discardLogger())
+	proxy := NewProxy(ProxyOptions{Client: client, Node: model.Node{ID: "agent-1", Datacenter: "dc1"}, Quorum: 1, Log: discardLogger()})
 	if _, err := proxy.Register(context.Background(), &discoveryv1.RegisterRequest{
 		Registration: &discoveryv1.Registration{Services: []*discoveryv1.Service{{Name: "web", TtlSeconds: 30}}, Generation: 1},
 	}); err != nil {

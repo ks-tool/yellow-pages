@@ -20,40 +20,72 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/ks-tool/yellow-pages/internal/health"
 	"github.com/ks-tool/yellow-pages/internal/model"
+	"github.com/ks-tool/yellow-pages/internal/observability"
 	"github.com/ks-tool/yellow-pages/internal/protoconv"
 	discoveryv1 "github.com/ks-tool/yellow-pages/proto/discovery/v1"
 )
 
+// propagationProbeTimeout bounds the async register/deregister SLI probes.
+const propagationProbeTimeout = 30 * time.Second
+
 // Proxy is the local-agent-proxy: the AgentService that local apps on 127.0.0.1
 // talk to. Writes are stamped with the agent's node identity and fanned out to
-// the seeds; reads fan out and merge. The agent tracks what it hosts so the
-// renew loop can keep those leases alive and the drain can deregister them.
+// the seeds; reads go through the bounded-staleness cache. The agent tracks what
+// it hosts so the renew loop can keep those leases alive and the drain can
+// deregister them.
 type Proxy struct {
 	discoveryv1.UnimplementedAgentServiceServer
 	client *SeedClient
+	cache  *Cache
 	node   model.Node
 	quorum int
+	prop   *observability.Propagation
 	log    *slog.Logger
 
 	mu     sync.Mutex
 	hosted map[string]model.ServiceInstance // serviceID -> definition
 }
 
-// NewProxy builds the proxy for node, requiring quorum seeds for a write to
-// succeed (k-of-N). A quorum < 1 is clamped to 1.
-func NewProxy(client *SeedClient, node model.Node, quorum int, log *slog.Logger) *Proxy {
-	if quorum < 1 {
-		quorum = 1
+// ProxyOptions configures a Proxy.
+type ProxyOptions struct {
+	// Client fans out to the seeds (required).
+	Client *SeedClient
+	// Node is the agent's node identity, stamped onto every registration.
+	Node model.Node
+	// Quorum is the minimum seeds a write must reach (k-of-N); < 1 clamps to 1.
+	Quorum int
+	// Cache serves reads with bounded staleness; nil reads fan out directly.
+	Cache *Cache
+	// Prop records register-to-visible / deregister-to-removed SLIs (optional).
+	Prop *observability.Propagation
+	// Log is the structured logger.
+	Log *slog.Logger
+}
+
+// NewProxy builds the proxy from opts.
+func NewProxy(opts ProxyOptions) *Proxy {
+	if opts.Quorum < 1 {
+		opts.Quorum = 1
 	}
-	if log == nil {
-		log = slog.Default()
+	if opts.Log == nil {
+		opts.Log = slog.Default()
 	}
-	return &Proxy{client: client, node: node, quorum: quorum, log: log, hosted: make(map[string]model.ServiceInstance)}
+	return &Proxy{
+		client: opts.Client,
+		cache:  opts.Cache,
+		node:   opts.Node,
+		quorum: opts.Quorum,
+		prop:   opts.Prop,
+		log:    opts.Log,
+		hosted: make(map[string]model.ServiceInstance),
+	}
 }
 
 // Register hosts the request's services on this agent and fans the registration
@@ -84,6 +116,14 @@ func (p *Proxy) Register(ctx context.Context, req *discoveryv1.RegisterRequest) 
 		p.hosted[s.ID] = s
 	}
 	p.mu.Unlock()
+
+	if p.prop != nil {
+		for _, s := range reg.Services {
+			// The probe must outlive this RPC (it measures visibility after the
+			// handler returns), so it uses its own bounded context, not ctx.
+			go p.measurePropagation(s.Name, s.ID, true) //nolint:gosec // G118: intentional detached probe
+		}
+	}
 	return &discoveryv1.RegisterResponse{}, nil
 }
 
@@ -116,25 +156,90 @@ func (p *Proxy) DeregisterService(ctx context.Context, req *discoveryv1.Deregist
 	}
 	res := p.client.DeregisterService(ctx, p.node.ID, req.GetServiceId())
 	p.mu.Lock()
+	name := p.hosted[req.GetServiceId()].Name
 	delete(p.hosted, req.GetServiceId())
 	p.mu.Unlock()
 	if !res.OK(1) {
 		return nil, status.Errorf(codes.Unavailable, "deregistered on %d/%d seeds", res.Succeeded, res.Total)
 	}
+	if p.prop != nil && name != "" {
+		// Detached probe (must outlive this RPC); see Register.
+		go p.measurePropagation(name, req.GetServiceId(), false) //nolint:gosec // G118: intentional detached probe
+	}
 	return &discoveryv1.DeregisterServiceResponse{}, nil
 }
 
-// Lookup fans out the query to the seeds and returns the merged result.
+// Lookup serves the query from the cache (bounded staleness), or fans out
+// directly when no cache is configured.
 func (p *Proxy) Lookup(ctx context.Context, req *discoveryv1.LookupRequest) (*discoveryv1.LookupResponse, error) {
 	q := protoconv.QueryFromProto(req.GetQuery())
 	if q.Name == "" {
 		return nil, status.Error(codes.InvalidArgument, "query.name is required")
 	}
-	lr, err := p.client.Lookup(ctx, q)
+
+	var (
+		lr  model.LookupResult
+		err error
+	)
+	if p.cache != nil {
+		lr, err = p.cache.Lookup(ctx, q)
+	} else {
+		lr, err = p.directLookup(ctx, q)
+	}
 	if err != nil {
 		return nil, status.Error(codes.Unavailable, "lookup failed on all seeds")
 	}
 	return protoconv.LookupResultToProto(lr), nil
+}
+
+// directLookup fans out, merges and applies the health filter (the no-cache path).
+func (p *Proxy) directLookup(ctx context.Context, q model.Query) (model.LookupResult, error) {
+	raw := q
+	raw.OnlyHealthy = false
+	lr, err := p.client.Lookup(ctx, raw)
+	if err != nil {
+		return model.LookupResult{}, err
+	}
+	if q.OnlyHealthy {
+		lr.Entries = health.Filter(lr.Entries, health.FilterOptions{OnlyPassing: true})
+	}
+	return lr, nil
+}
+
+// measurePropagation polls the cluster until the (node, serviceID) appears
+// (register) or disappears (deregister), recording the latency. Bounded by a
+// timeout; runs in its own goroutine and uses the wall clock (a real-time SLI).
+func (p *Proxy) measurePropagation(name, serviceID string, appear bool) {
+	start := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), propagationProbeTimeout)
+	defer cancel()
+
+	for {
+		lr, err := p.client.Lookup(ctx, model.Query{Name: name})
+		if err == nil && contains(lr.Entries, p.node.ID, serviceID) == appear {
+			d := time.Since(start)
+			if appear {
+				p.prop.ObserveRegisterToVisible(d)
+			} else {
+				p.prop.ObserveDeregisterToRemoved(d)
+			}
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+}
+
+func contains(entries []model.ServiceEntry, nodeID, serviceID string) bool {
+	for _, e := range entries {
+		if e.Node.ID == nodeID && e.Service.ID == serviceID {
+			return true
+		}
+	}
+	return false
 }
 
 // hostedCount reports how many services the agent currently hosts.

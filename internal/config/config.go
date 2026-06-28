@@ -97,6 +97,9 @@ type Agent struct {
 	// DrainWindow is the lame-duck window: after readiness goes NOT_SERVING the
 	// agent waits this long before it stops accepting and deregisters. Default 5s.
 	DrainWindow Duration `yaml:"drain_window"`
+	// CacheMaxAge bounds how stale a local read may be before it refetches from
+	// the seeds; the cache refresh loop also runs at this cadence. Default 5s.
+	CacheMaxAge Duration `yaml:"cache_max_age"`
 }
 
 // TLS configures TLS/mTLS transport security, off by default. Enabling it (and
@@ -262,6 +265,9 @@ func (c *Config) applyDefaults() {
 	if c.Agent.DrainWindow == 0 {
 		c.Agent.DrainWindow = Duration(5 * time.Second)
 	}
+	if c.Agent.CacheMaxAge == 0 {
+		c.Agent.CacheMaxAge = Duration(5 * time.Second)
+	}
 }
 
 func defaultListener(l *Listener, port uint16) {
@@ -347,6 +353,9 @@ func (c *Config) validateAgent() []error {
 	}
 	if c.Agent.DrainWindow < 0 {
 		errs = append(errs, errors.New("agent.drain_window: must not be negative"))
+	}
+	if c.Agent.CacheMaxAge <= 0 {
+		errs = append(errs, errors.New("agent.cache_max_age: must be positive"))
 	}
 	return errs
 }
