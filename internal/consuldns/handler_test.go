@@ -61,7 +61,7 @@ func (w *testRW) Hijack()                   {}
 func newDNS(t *testing.T) (*Handler, *store.Memory) {
 	t.Helper()
 	st := store.NewMemory(store.Options{Clock: clock.System(), DefaultTTL: 30 * time.Second})
-	h := NewHandler(storeResolver{st: st}, Config{Domain: "consul.", Datacenter: "dc1", Truncate: true}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	h := NewHandler(storeResolver{st: st}, Config{Domain: "consul.", Datacenter: "dc1", Truncate: true}, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	return h, st
 }
 

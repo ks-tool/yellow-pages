@@ -153,6 +153,7 @@ func (c *SeedClient) fanOut(ctx context.Context, op func(context.Context, discov
 		}(sc)
 	}
 	wg.Wait()
+	c.prop.ObserveFanout(res.Succeeded, res.Total)
 	return res
 }
 
@@ -200,6 +201,7 @@ func (c *SeedClient) Lookup(ctx context.Context, q model.Query) (model.LookupRes
 	var (
 		mu       sync.Mutex
 		all      []model.ServiceEntry
+		counts   []int
 		maxIndex uint64
 		okCount  int
 		errs     []error
@@ -222,6 +224,7 @@ func (c *SeedClient) Lookup(ctx context.Context, q model.Query) (model.LookupRes
 			okCount++
 			lr := protoconv.LookupResultFromProto(resp)
 			all = append(all, lr.Entries...)
+			counts = append(counts, len(lr.Entries))
 			if lr.Index > maxIndex {
 				maxIndex = lr.Index
 			}
@@ -229,11 +232,30 @@ func (c *SeedClient) Lookup(ctx context.Context, q model.Query) (model.LookupRes
 	}
 	wg.Wait()
 
+	c.prop.ObserveFanout(okCount, len(c.conns))
 	if okCount == 0 {
 		return model.LookupResult{}, fmt.Errorf("seedclient: lookup failed on all seeds: %w", errors.Join(errs...))
 	}
 	c.prop.SetClockSkew(estimateSkew(all))
+	c.prop.SetDivergence(spread(counts))
 	return model.LookupResult{Entries: health.MergeLWW(all), Index: maxIndex}, nil
+}
+
+// spread is max-min over the per-seed instance counts: 0 when seeds agree.
+func spread(counts []int) int {
+	if len(counts) == 0 {
+		return 0
+	}
+	lo, hi := counts[0], counts[0]
+	for _, c := range counts[1:] {
+		if c < lo {
+			lo = c
+		}
+		if c > hi {
+			hi = c
+		}
+	}
+	return hi - lo
 }
 
 // estimateSkew approximates the clock skew between seeds: for one registration
@@ -273,6 +295,35 @@ func estimateSkew(entries []model.ServiceEntry) time.Duration {
 		}
 	}
 	return maxSpread
+}
+
+// Dump returns each seed's raw (unmerged) instance set for q, keyed by seed
+// address — the basis for the registry-dump divergence view.
+func (c *SeedClient) Dump(ctx context.Context, q model.Query) map[string][]model.ServiceEntry {
+	req := &discoveryv1.LookupRequest{Query: protoconv.QueryToProto(q)}
+	var (
+		mu  sync.Mutex
+		out = make(map[string][]model.ServiceEntry, len(c.conns))
+		wg  sync.WaitGroup
+	)
+	for _, sc := range c.conns {
+		wg.Add(1)
+		go func(sc seedConn) {
+			defer wg.Done()
+			cctx, cancel := context.WithTimeout(ctx, c.seedTimeout)
+			defer cancel()
+			resp, err := sc.agent.Lookup(cctx, req)
+			mu.Lock()
+			if err == nil {
+				out[sc.addr] = protoconv.LookupResultFromProto(resp).Entries
+			} else {
+				out[sc.addr] = nil
+			}
+			mu.Unlock()
+		}(sc)
+	}
+	wg.Wait()
+	return out
 }
 
 // Reachable returns how many seeds currently report SERVING on grpc.health.v1.

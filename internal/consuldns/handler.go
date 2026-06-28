@@ -29,6 +29,7 @@ import (
 
 	"github.com/ks-tool/yellow-pages/internal/health"
 	"github.com/ks-tool/yellow-pages/internal/model"
+	"github.com/ks-tool/yellow-pages/internal/observability"
 )
 
 // Resolver is the merged read path the DNS interface projects (the agent Proxy
@@ -52,22 +53,24 @@ type Config struct {
 type Handler struct {
 	resolver Resolver
 	cfg      Config
+	prop     *observability.Propagation
 	log      *slog.Logger
 }
 
-// NewHandler builds the DNS handler.
-func NewHandler(resolver Resolver, cfg Config, log *slog.Logger) *Handler {
+// NewHandler builds the DNS handler. prop is optional (surface metrics).
+func NewHandler(resolver Resolver, cfg Config, prop *observability.Propagation, log *slog.Logger) *Handler {
 	if log == nil {
 		log = slog.Default()
 	}
 	if !strings.HasSuffix(cfg.Domain, ".") {
 		cfg.Domain += "."
 	}
-	return &Handler{resolver: resolver, cfg: cfg, log: log}
+	return &Handler{resolver: resolver, cfg: cfg, prop: prop, log: log}
 }
 
 // ServeDNS implements dns.Handler.
 func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
+	h.prop.CountRequest("dns")
 	resp := new(dns.Msg)
 	resp.SetReply(req)
 	resp.Authoritative = true

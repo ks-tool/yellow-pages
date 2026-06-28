@@ -75,6 +75,8 @@ type Store interface {
 	GC() int
 	// Index returns the current registry high-watermark.
 	Index() uint64
+	// Size returns the number of service instances held.
+	Size() int
 }
 
 // Options configures a Memory store.
@@ -152,6 +154,17 @@ func (m *Memory) Index() uint64 {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.index
+}
+
+// Size returns the number of service instances held.
+func (m *Memory) Size() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n := 0
+	for _, node := range m.nodes {
+		n += len(node.services)
+	}
+	return n
 }
 
 // next advances and returns the monotonic index. Callers hold m.mu.

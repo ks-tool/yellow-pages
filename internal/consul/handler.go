@@ -29,8 +29,15 @@ import (
 	"github.com/ks-tool/yellow-pages/internal/cred"
 	"github.com/ks-tool/yellow-pages/internal/health"
 	"github.com/ks-tool/yellow-pages/internal/model"
+	"github.com/ks-tool/yellow-pages/internal/observability"
 	"github.com/ks-tool/yellow-pages/internal/watch"
 )
+
+// Dumper exposes the raw per-seed read for the registry-dump admin endpoint, so
+// per-seed divergence is debuggable. The key is a seed address (or "local").
+type Dumper interface {
+	Dump(ctx context.Context, q model.Query) map[string][]model.ServiceEntry
+}
 
 // Registry is the cluster surface the Consul adapter projects. Resolve returns
 // the merged entries and the age of the cache entry they came from. The check
@@ -77,7 +84,11 @@ type Options struct {
 	Authz    *cred.Authorizer
 	// MaxWaiters caps concurrent blocking queries (0 = default 256).
 	MaxWaiters int
-	Log        *slog.Logger
+	// Prop records the surface/waiter metrics (optional).
+	Prop *observability.Propagation
+	// Dumper backs the registry-dump admin endpoint (optional).
+	Dumper Dumper
+	Log    *slog.Logger
 }
 
 // Handler implements the Consul-compatible HTTP API.
@@ -87,6 +98,8 @@ type Handler struct {
 	watcher  *watch.Watcher
 	identity cred.Identity
 	authz    *cred.Authorizer
+	prop     *observability.Propagation
+	dumper   Dumper
 	waiters  chan struct{}
 	log      *slog.Logger
 }
@@ -105,6 +118,8 @@ func NewHandler(opts Options) http.Handler {
 		watcher:  opts.Watcher,
 		identity: opts.Identity,
 		authz:    opts.Authz,
+		prop:     opts.Prop,
+		dumper:   opts.Dumper,
 		waiters:  make(chan struct{}, opts.MaxWaiters),
 		log:      opts.Log,
 	}
@@ -134,7 +149,29 @@ func NewHandler(opts Options) http.Handler {
 	mux.HandleFunc("GET /v1/agent/checks", h.agentChecks)
 	mux.HandleFunc("PUT /v1/agent/service/maintenance/{serviceID}", h.serviceMaintenance)
 	mux.HandleFunc("GET /v1/agent/health/service/name/{name}", h.agentHealthByName)
-	return mux
+	mux.HandleFunc("GET /v1/internal/registry-dump", h.registryDump)
+
+	// Count every request to this surface (low-cardinality label).
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h.prop.CountRequest("consul_http")
+		mux.ServeHTTP(w, r)
+	})
+}
+
+// registryDump is a read-only admin endpoint: the raw per-seed instance sets for
+// a service (or all), so per-seed divergence can be inspected.
+func (h *Handler) registryDump(w http.ResponseWriter, r *http.Request) {
+	q := model.Query{Name: r.URL.Query().Get("service"), Datacenter: r.URL.Query().Get("dc")}
+	if h.dumper != nil {
+		h.writeJSON(w, h.indexFor(q), model.ConsistencyDefault, 0, h.dumper.Dump(r.Context(), q))
+		return
+	}
+	res, _, err := h.reg.Resolve(r.Context(), q, model.ConsistencyConsistent)
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	h.writeJSON(w, h.indexFor(q), model.ConsistencyDefault, 0, map[string][]model.ServiceEntry{"local": res.Entries})
 }
 
 // --- write paths (authz-enforced) ---
@@ -248,7 +285,9 @@ func (h *Handler) read(w http.ResponseWriter, r *http.Request) ([]model.ServiceE
 			http.Error(w, "too many blocking queries", http.StatusTooManyRequests)
 			return nil, 0, mode, 0, false
 		}
+		h.prop.IncWaiters()
 		h.watcher.WaitForChange(r.Context(), q, minIndex, wait)
+		h.prop.DecWaiters()
 		h.releaseWaiter()
 	}
 

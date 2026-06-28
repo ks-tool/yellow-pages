@@ -215,6 +215,8 @@ func buildComponents(cfg *config.Config, metrics *observability.Prometheus, clk 
 			observability.NewMetricsServer(cfg.Listeners.Metrics.Addr(), metrics.Registry(), logger))
 	}
 
+	prop := observability.NewPropagation(metrics.Registry())
+
 	switch cfg.Role {
 	case config.RoleSeed:
 		watcher := watch.New(0, clk)
@@ -235,12 +237,13 @@ func buildComponents(cfg *config.Config, metrics *observability.Prometheus, clk 
 				Authz:     sec.authz,
 				Log:       logger,
 			}),
-			store.NewGCLoop(st, cfg.HeartbeatInterval.Duration(), clk, logger),
+			store.NewGCLoop(st, cfg.HeartbeatInterval.Duration(), clk, logger).
+				WithReapHook(func(removed, size int) { prop.AddEvictions(removed); prop.SetRegistrySize(size) }),
 		)
-		if c := consulComponent(cfg, seedReg, seedNode, seeds, watcher, sec, logger); c != nil {
+		if c := consulComponent(cfg, seedReg, seedNode, seeds, watcher, sec, prop, seedReg, logger); c != nil {
 			components = append(components, c)
 		}
-		if c := dnsComponent(cfg, seedReg, logger); c != nil {
+		if c := dnsComponent(cfg, seedReg, prop, logger); c != nil {
 			components = append(components, c)
 		}
 		if cfg.ConfigDir != "" {
@@ -255,7 +258,6 @@ func buildComponents(cfg *config.Config, metrics *observability.Prometheus, clk 
 		if err != nil {
 			return nil, err
 		}
-		prop := observability.NewPropagation(metrics.Registry())
 		client.SetPropagation(prop)
 		node := model.Node{
 			ID:         sec.nodeID,
@@ -304,10 +306,10 @@ func buildComponents(cfg *config.Config, metrics *observability.Prometheus, clk 
 			seedclient.NewRefreshLoop(cache, cfg.Agent.CacheMaxAge.Duration(), clk, logger),
 			watch.NewFlusher(agentWatcher, cfg.DataDir, cfg.HeartbeatInterval.Duration(), clk, logger),
 		)
-		if c := consulComponent(cfg, proxy, node, seeds, agentWatcher, sec, logger); c != nil {
+		if c := consulComponent(cfg, proxy, node, seeds, agentWatcher, sec, prop, proxy, logger); c != nil {
 			components = append(components, c)
 		}
-		if c := dnsComponent(cfg, proxy, logger); c != nil {
+		if c := dnsComponent(cfg, proxy, prop, logger); c != nil {
 			components = append(components, c)
 		}
 		if cfg.ConfigDir != "" {
@@ -319,7 +321,7 @@ func buildComponents(cfg *config.Config, metrics *observability.Prometheus, clk 
 }
 
 // dnsComponent builds the Consul DNS component when its listener is enabled.
-func dnsComponent(cfg *config.Config, reg consuldns.Resolver, logger *slog.Logger) app.Component {
+func dnsComponent(cfg *config.Config, reg consuldns.Resolver, prop *observability.Propagation, logger *slog.Logger) app.Component {
 	if !cfg.Listeners.DNS.Enabled {
 		return nil
 	}
@@ -331,7 +333,7 @@ func dnsComponent(cfg *config.Config, reg consuldns.Resolver, logger *slog.Logge
 		OnlyPassing:  cfg.DNS.OnlyPassing,
 		ARecordLimit: cfg.DNS.ARecordLimit,
 		Truncate:     cfg.DNS.EnableTruncate,
-	}, logger)
+	}, prop, logger)
 	return consuldns.NewComponent(cfg.Listeners.DNS.Addr(), handler, logger)
 }
 
@@ -350,7 +352,7 @@ func ttlSeconds(d time.Duration) uint32 {
 // consulComponent builds the Consul-compatible HTTP component when its listener
 // is enabled, backed by reg (the seed's Store or the agent's Proxy) and watcher
 // (blocking queries + X-Consul-Index).
-func consulComponent(cfg *config.Config, reg consul.Registry, node model.Node, seeds []string, watcher *watch.Watcher, sec security, logger *slog.Logger) app.Component {
+func consulComponent(cfg *config.Config, reg consul.Registry, node model.Node, seeds []string, watcher *watch.Watcher, sec security, prop *observability.Propagation, dumper consul.Dumper, logger *slog.Logger) app.Component {
 	if !cfg.Listeners.ConsulHTTP.Enabled {
 		return nil
 	}
@@ -367,6 +369,8 @@ func consulComponent(cfg *config.Config, reg consul.Registry, node model.Node, s
 		Watcher:  watcher,
 		Identity: sec.identity,
 		Authz:    sec.authz,
+		Prop:     prop,
+		Dumper:   dumper,
 		Log:      logger,
 	})
 	return consul.NewComponent(cfg.Listeners.ConsulHTTP.Addr(), handler, logger)
@@ -409,6 +413,11 @@ func (s storeRegistry) SetMaintenance(_ context.Context, serviceID string, enabl
 // Hosted reports no services: a seed serves the registry but hosts no app
 // services of its own in this model.
 func (s storeRegistry) Hosted() []model.ServiceInstance { return nil }
+
+// Dump returns the seed's own registry view (no per-seed divergence on a seed).
+func (s storeRegistry) Dump(_ context.Context, q model.Query) map[string][]model.ServiceEntry {
+	return map[string][]model.ServiceEntry{"local": s.st.Lookup(q).Entries}
+}
 
 func listenerState(l config.Listener) string {
 	if !l.Enabled {

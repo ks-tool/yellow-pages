@@ -34,6 +34,7 @@ type GCLoop struct {
 	interval time.Duration
 	clock    clock.Clock
 	log      *slog.Logger
+	onReap   func(removed, size int)
 }
 
 // NewGCLoop builds a GC loop over s ticking every interval (default 5s). A nil
@@ -51,6 +52,13 @@ func NewGCLoop(s Store, interval time.Duration, clk clock.Clock, log *slog.Logge
 	return &GCLoop{store: s, interval: interval, clock: clk, log: log}
 }
 
+// WithReapHook sets a callback invoked after every GC tick with the number
+// reaped and the current registry size (for metrics). Returns the loop.
+func (g *GCLoop) WithReapHook(fn func(removed, size int)) *GCLoop {
+	g.onReap = fn
+	return g
+}
+
 // Name identifies the component.
 func (g *GCLoop) Name() string { return "store-gc" }
 
@@ -63,8 +71,12 @@ func (g *GCLoop) Start(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C():
-			if n := g.store.GC(); n > 0 {
+			n := g.store.GC()
+			if n > 0 {
 				g.log.Debug("reaped expired registrations", "count", n)
+			}
+			if g.onReap != nil {
+				g.onReap(n, g.store.Size())
 			}
 		}
 	}

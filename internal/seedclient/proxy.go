@@ -233,6 +233,11 @@ func (p *Proxy) SetMaintenance(_ context.Context, serviceID string, enabled bool
 	return nil
 }
 
+// Dump returns each seed's raw instance set for q (registry-dump divergence view).
+func (p *Proxy) Dump(ctx context.Context, q model.Query) map[string][]model.ServiceEntry {
+	return p.client.Dump(ctx, q)
+}
+
 // Hosted returns the services this agent currently hosts.
 func (p *Proxy) Hosted() []model.ServiceInstance {
 	p.mu.Lock()
