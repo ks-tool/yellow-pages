@@ -34,8 +34,8 @@ Writes go to every seed; reads query all seeds and merge **last-writer-wins** by
 data `generation`, then `last_seen`. This gives availability without consensus.
 
 ```
-        register (fan-out, k-of-N)         ┌──────────┐
-   app ───────────────► agent ────────────►│  seed 1  │
+        register (fan-out, k-of-N)          ┌──────────┐
+   app ───────────────► agent ─────────────►│  seed 1  │
         Consul HTTP/DNS   │  ◄── Lookup ────│ registry │
         + native gRPC     │   (fan-out      └──────────┘
                           │    + LWW merge) ┌──────────┐

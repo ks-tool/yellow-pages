@@ -17,12 +17,12 @@ docker compose down                # tear down
 
 ## Topology
 
-| Node | Role | Consul HTTP | DNS | metrics |
-|---|---|---|---|---|
-| `seed1` | seed | `:8501` | — | `:9901` |
-| `seed2` | seed | `:8502` | — | `:9902` |
-| `agent1` | agent | `:8511` | `:8611` | `:9911` |
-| `agent2` | agent | `:8512` | `:8612` | `:9912` |
+| Node     | Role  | Consul HTTP | DNS     | metrics |
+|----------|-------|-------------|---------|---------|
+| `seed1`  | seed  | `:8501`     | —       | `:9901` |
+| `seed2`  | seed  | `:8502`     | —       | `:9902` |
+| `agent1` | agent | `:8511`     | `:8611` | `:9911` |
+| `agent2` | agent | `:8512`     | `:8612` | `:9912` |
 
 Seeds are **independent** (they don't sync — anti-entropy is M18, off here).
 Agents fan registrations out to *both* seeds and merge reads (LWW), so a write on
