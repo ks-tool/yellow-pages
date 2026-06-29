@@ -450,6 +450,10 @@ func bootstrapRegistrar(cfg *config.Config, clk clock.Clock, logger *slog.Logger
 	if len(key) == 0 {
 		return nil, fmt.Errorf("bootstrap: empty signing key")
 	}
+	if len(key) < 32 {
+		logger.Warn("bootstrap signing key is short — a weak key can be brute-forced from a token "+
+			"(offline) and used to forge tokens; use e.g. `openssl rand -base64 48`", "key_len", len(key))
+	}
 
 	seeds := cfg.Bootstrap.AdvertiseSeeds
 	if len(seeds) == 0 {

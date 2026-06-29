@@ -447,6 +447,9 @@ func (c *Config) Validate() error {
 		if len(c.Bootstrap.AdvertiseSeeds) == 0 && len(c.Cluster.Seeds) == 0 {
 			errs = append(errs, errors.New("bootstrap: advertise_seeds or cluster.seeds must be set so served configs can reach a seed"))
 		}
+		if c.Bootstrap.RateLimit < 0 {
+			errs = append(errs, errors.New("bootstrap: rate_limit must be >= 0 (0 applies the default 10/s; a negative value would disable the guard)"))
+		}
 	}
 
 	if d := c.Cluster.Discovery; d != nil {

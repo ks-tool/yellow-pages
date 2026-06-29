@@ -34,8 +34,9 @@ import (
 // It exists as its own type (rather than reusing config.Config) so a secret
 // field can never be added to the wire by accident.
 type rendered struct {
+	// node_name is deliberately absent: it must be node-unique and set locally,
+	// so it is not even representable on the bootstrap wire.
 	Role              string     `yaml:"role"`
-	NodeName          string     `yaml:"node_name,omitempty"`
 	Datacenter        string     `yaml:"datacenter"`
 	Cluster           rCluster   `yaml:"cluster"`
 	TTL               string     `yaml:"ttl"`

@@ -165,7 +165,9 @@ func newCreateTokenCmd() *cobra.Command {
 // bootstrapCreds builds gRPC transport credentials for the client: insecure when
 // no TLS flag/material is given, else TLS (optionally mTLS).
 func bootstrapCreds(useTLS bool, caFile, certFile, keyFile string, insec bool) (credentials.TransportCredentials, error) {
-	if !useTLS && caFile == "" && certFile == "" {
+	// Any TLS-implying flag selects the TLS path; only a fully bare invocation is
+	// plaintext (so --insecure/--key never silently downgrade to no-TLS).
+	if !useTLS && !insec && caFile == "" && certFile == "" && keyFile == "" {
 		return insecure.NewCredentials(), nil
 	}
 	conf := &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: insec} //nolint:gosec // insecure is an explicit opt-in flag

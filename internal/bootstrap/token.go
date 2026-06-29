@@ -23,6 +23,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"time"
@@ -37,6 +38,11 @@ const (
 	tokenPayloadLen = 16 // 8-byte expiry (unix seconds) + 8-byte random nonce
 	tokenMACLen     = sha256.Size
 	defaultTokenTTL = 30 * time.Second
+	// MinSigningKeyLen is the floor for an HMAC signing key. A token exposes its
+	// full (message, mac) pair, so a short/low-entropy key is brute-forceable
+	// offline → token forgery. Operators should use far more (e.g. `openssl rand
+	// -base64 48`); this is only a hard floor.
+	MinSigningKeyLen = 16
 )
 
 var (
@@ -48,8 +54,8 @@ var (
 
 // MintToken issues a token signed by key, valid for ttl from now.
 func MintToken(key []byte, ttl time.Duration, now time.Time) (string, error) {
-	if len(key) == 0 {
-		return "", errors.New("bootstrap: empty signing key")
+	if len(key) < MinSigningKeyLen {
+		return "", fmt.Errorf("bootstrap: signing key too short (%d bytes, need >= %d)", len(key), MinSigningKeyLen)
 	}
 	if ttl <= 0 {
 		ttl = defaultTokenTTL

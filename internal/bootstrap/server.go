@@ -19,6 +19,7 @@ package bootstrap
 import (
 	"context"
 	"log/slog"
+	"net"
 	"strings"
 	"sync"
 	"time"
@@ -44,8 +45,8 @@ type Options struct {
 	SigningKey    []byte         // HMAC key validating short-lived tokens
 	AllowSeedJoin bool           // permit role=seed (high risk)
 	Seeds         []string       // advertised seed list written into served configs
-	RateLimit     int            // per-client requests/sec (0 = unlimited)
-	Clock         clock.Clock    // time source for token expiry (defaults to System)
+	RateLimit     int            // per-client requests/sec (<= 0 disables; cmd passes a positive default)
+	Clock         clock.Clock    // time source for token expiry + rate-limit window (defaults to System)
 	Log           *slog.Logger
 }
 
@@ -59,7 +60,7 @@ type Service struct {
 	signingKey    []byte
 	allowSeedJoin bool
 	seeds         []string
-	rrl           *rateLimiter
+	rrl           *ratelimit.Limiter
 	clk           clock.Clock
 	log           *slog.Logger
 }
@@ -74,7 +75,7 @@ func NewService(opts Options) *Service {
 	}
 	return &Service{
 		cfg: opts.Config, signingKey: opts.SigningKey, allowSeedJoin: opts.AllowSeedJoin,
-		seeds: opts.Seeds, rrl: newRateLimiter(opts.RateLimit), clk: opts.Clock, log: opts.Log,
+		seeds: opts.Seeds, rrl: ratelimit.New(opts.RateLimit, opts.Clock), clk: opts.Clock, log: opts.Log,
 	}
 }
 
@@ -87,7 +88,10 @@ func (s *Service) Register(reg grpc.ServiceRegistrar) {
 // the short-lived token and the seed-join gate. Errors use gRPC status codes.
 func (s *Service) GetConfig(ctx context.Context, req *discoveryv1.GetConfigRequest) (*discoveryv1.GetConfigResponse, error) {
 	client := peerAddr(ctx)
-	if !s.rrl.allow(client) {
+	// Rate-limit per source HOST, not host:port — the ephemeral source port
+	// changes on every connection, so port-keying would let a reconnecting client
+	// bypass the limit. The full address is still used for the audit log.
+	if !s.rrl.allow(peerHost(ctx)) {
 		return nil, status.Error(codes.ResourceExhausted, "bootstrap rate limit exceeded")
 	}
 	if err := ValidateToken(s.signingKey, tokenFromMetadata(ctx), s.clk.Now()); err != nil {
@@ -140,17 +144,30 @@ func peerAddr(ctx context.Context) string {
 	return "unknown"
 }
 
+// peerHost is the source host without the ephemeral port (the rate-limit key).
+func peerHost(ctx context.Context) string {
+	addr := peerAddr(ctx)
+	if host, _, err := net.SplitHostPort(addr); err == nil {
+		return host
+	}
+	return addr
+}
+
 // rateLimiter is a per-client fixed-window limiter (bootstrap DoS guard).
 type rateLimiter struct {
 	limit int
+	clk   clock.Clock
 
 	mu      sync.Mutex
 	counts  map[string]int
 	resetAt time.Time
 }
 
-func newRateLimiter(perSecond int) *rateLimiter {
-	return &rateLimiter{limit: perSecond, counts: map[string]int{}}
+func newRateLimiter(perSecond int, clk clock.Clock) *rateLimiter {
+	if clk == nil {
+		clk = clock.System()
+	}
+	return &rateLimiter{limit: perSecond, clk: clk, counts: map[string]int{}}
 }
 
 func (r *rateLimiter) allow(client string) bool {
@@ -159,7 +176,7 @@ func (r *rateLimiter) allow(client string) bool {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	now := time.Now()
+	now := r.clk.Now()
 	if now.After(r.resetAt) {
 		r.counts = make(map[string]int, len(r.counts))
 		r.resetAt = now.Add(time.Second)

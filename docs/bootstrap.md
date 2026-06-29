@@ -149,7 +149,7 @@ tier to serve or harvest registrations. The controls:
 | Risk | Control |
 |---|---|
 | Exposure by default | RPC **off by default** (`bootstrap.enabled`); registered only on a seed. |
-| Anonymous pulls | **Token required**, HMAC-signed by `signing_key`; signature + expiry checked in constant time. Start-up fails without a signing key. |
+| Anonymous pulls | **Token required**, HMAC-signed by `signing_key`; the signature is compared in constant time (`hmac.Equal`), then expiry is checked. Start-up fails without a signing key; a too-short key warns (mint hard-floors at 16 bytes). |
 | Stolen / replayed token | Tokens are **short-lived** (`token_ttl`, default 30s) → useless after expiry; the signing key itself never goes on the wire. |
 | Token sniffing | Runs on the gRPC server's **TLS/mTLS** (`tls.enabled`/`mutual_tls`). An insecure gRPC server logs a loud warning when bootstrap is on. |
 | Rogue **seed** joining | **`allow_seed_join: false`** by default → `role=seed` returns `PermissionDenied`. Even when enabled, a new seed still needs valid credentials and to be in peers (bootstrap grants **no** trust by itself). |

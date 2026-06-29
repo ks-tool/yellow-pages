@@ -57,6 +57,30 @@ func TestMintAndValidate(t *testing.T) {
 	}
 }
 
+func TestMintGuards(t *testing.T) {
+	t.Parallel()
+	t0 := time.Unix(1_700_000_000, 0)
+
+	if _, err := MintToken(nil, time.Minute, t0); err == nil {
+		t.Error("empty key should error")
+	}
+	if _, err := MintToken([]byte("shortkey"), time.Minute, t0); err == nil {
+		t.Errorf("a %d-byte key (< %d) should error", len("shortkey"), MinSigningKeyLen)
+	}
+
+	// ttl <= 0 falls back to the 30s default.
+	tok, err := MintToken(signKey, 0, t0)
+	if err != nil {
+		t.Fatalf("ttl=0 mint: %v", err)
+	}
+	if err := ValidateToken(signKey, tok, t0.Add(29*time.Second)); err != nil {
+		t.Errorf("default-ttl token at +29s = %v, want valid", err)
+	}
+	if err := ValidateToken(signKey, tok, t0.Add(31*time.Second)); !errors.Is(err, ErrTokenExpired) {
+		t.Errorf("default-ttl token at +31s = %v, want expired (confirms 30s default)", err)
+	}
+}
+
 func TestMintUniqueTokens(t *testing.T) {
 	t.Parallel()
 	t0 := time.Unix(1_700_000_000, 0)

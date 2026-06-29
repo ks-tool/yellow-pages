@@ -104,13 +104,32 @@ func TestRenderIsValidLoadableConfig(t *testing.T) {
 	}
 }
 
-func TestRenderSeedRole(t *testing.T) {
+func TestRenderRoleGating(t *testing.T) {
 	t.Parallel()
-	out, err := Render(secretSeedConfig(), config.RoleSeed, []string{"seed-a:9900"})
+	cfg := secretSeedConfig() // has MaxServices + an Agent block set
+
+	seed := string(render(t, cfg, config.RoleSeed))
+	if !strings.Contains(seed, "role: seed") || !strings.Contains(seed, "max_services: 5000") {
+		t.Errorf("seed render missing role/max_services:\n%s", seed)
+	}
+	if strings.Contains(seed, "write_quorum") || strings.Contains(seed, "seed_timeout") {
+		t.Errorf("seed render leaked the agent-only block:\n%s", seed)
+	}
+
+	agent := string(render(t, cfg, config.RoleAgent))
+	if !strings.Contains(agent, "role: agent") || !strings.Contains(agent, "write_quorum") {
+		t.Errorf("agent render missing role/agent block:\n%s", agent)
+	}
+	if strings.Contains(agent, "max_services") {
+		t.Errorf("agent render included seed-only max_services:\n%s", agent)
+	}
+}
+
+func render(t *testing.T, cfg *config.Config, role config.Role) []byte {
+	t.Helper()
+	b, err := Render(cfg, role, []string{"seed-a:9900"})
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("Render: %v", err)
 	}
-	if !strings.Contains(string(out), "role: seed") {
-		t.Errorf("seed render missing role: seed:\n%s", out)
-	}
+	return b
 }

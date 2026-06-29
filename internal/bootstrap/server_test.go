@@ -123,4 +123,44 @@ func TestServiceRateLimit(t *testing.T) {
 	if _, err := get(s, tok, "agent"); status.Code(err) != codes.ResourceExhausted {
 		t.Errorf("second within window = %v, want ResourceExhausted", err)
 	}
+	// The window resets on the limiter's (injected) clock, not wall time.
+	clk.Advance(2 * time.Second)
+	if _, err := get(s, tok, "agent"); err != nil {
+		t.Errorf("after window advance = %v, want ok", err)
+	}
+}
+
+func TestServiceRoleHandling(t *testing.T) {
+	t.Parallel()
+	clk := clock.NewFake(clockT0)
+	s := testService(t, false, 0, clk)
+	tok, _ := MintToken(signKey, time.Minute, clk.Now())
+
+	// Empty role defaults to agent.
+	resp, err := get(s, tok, "")
+	if err != nil {
+		t.Fatalf("empty role = %v, want ok", err)
+	}
+	if !strings.Contains(string(resp.GetConfig()), "role: agent") {
+		t.Errorf("empty role did not default to agent:\n%s", resp.GetConfig())
+	}
+	// An unknown role is rejected.
+	if _, err := get(s, tok, "master"); status.Code(err) != codes.InvalidArgument {
+		t.Errorf("invalid role = %v, want InvalidArgument", err)
+	}
+}
+
+// TestServiceBearerHeader: the token may arrive via the standard Authorization
+// Bearer header instead of the bootstrap-token metadata key.
+func TestServiceBearerHeader(t *testing.T) {
+	t.Parallel()
+	clk := clock.NewFake(clockT0)
+	s := testService(t, false, 0, clk)
+	tok, _ := MintToken(signKey, time.Minute, clk.Now())
+
+	ctx := peer.NewContext(context.Background(), &peer.Peer{Addr: &net.TCPAddr{IP: net.IPv4(10, 0, 0, 9), Port: 5000}})
+	ctx = metadata.NewIncomingContext(ctx, metadata.Pairs("authorization", "Bearer "+tok))
+	if _, err := s.GetConfig(ctx, &discoveryv1.GetConfigRequest{Role: "agent"}); err != nil {
+		t.Errorf("bearer-header token = %v, want ok", err)
+	}
 }
