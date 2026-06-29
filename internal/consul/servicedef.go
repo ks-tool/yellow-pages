@@ -44,7 +44,7 @@ type defRegistrar interface {
 // LoadServiceDefs reads every *.json service-definition file in dir and registers
 // the services it declares. Returns the number registered. A bad file is logged
 // and skipped (best-effort, like Consul).
-func LoadServiceDefs(ctx context.Context, dir string, reg defRegistrar, log *slog.Logger) (int, error) {
+func LoadServiceDefs(ctx context.Context, dir string, reg defRegistrar, checks ChecksReporter, log *slog.Logger) (int, error) {
 	if dir == "" {
 		return 0, nil
 	}
@@ -67,10 +67,14 @@ func LoadServiceDefs(ctx context.Context, dir string, reg defRegistrar, log *slo
 			if in.Name == "" {
 				continue
 			}
-			regn := model.Registration{Services: []model.ServiceInstance{inputToService(in)}, Generation: 1}
+			svc := inputToService(in)
+			regn := model.Registration{Services: []model.ServiceInstance{svc}, Generation: 1}
 			if rerr := reg.RegisterServices(ctx, regn); rerr != nil {
 				log.Warn("service-definition register failed", "service", in.Name, "error", rerr)
 				continue
+			}
+			if checks != nil {
+				checks.Set(svc.ID, activeChecks(in))
 			}
 			count++
 		}
@@ -98,17 +102,19 @@ func parseServiceDef(path string) ([]registerInput, error) {
 // Loader is an app.Component that registers service-definition files at start and
 // re-reads them on SIGHUP (hot-reload without a restart).
 type Loader struct {
-	dir string
-	reg defRegistrar
-	log *slog.Logger
+	dir    string
+	reg    defRegistrar
+	checks ChecksReporter
+	log    *slog.Logger
 }
 
-// NewLoader builds the service-definition loader.
-func NewLoader(dir string, reg defRegistrar, log *slog.Logger) *Loader {
+// NewLoader builds the service-definition loader. checks (optional) starts any
+// active health checks declared in the files.
+func NewLoader(dir string, reg defRegistrar, checks ChecksReporter, log *slog.Logger) *Loader {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Loader{dir: dir, reg: reg, log: log}
+	return &Loader{dir: dir, reg: reg, checks: checks, log: log}
 }
 
 // Name identifies the component.
@@ -139,7 +145,7 @@ func (l *Loader) Start(ctx context.Context) error {
 func (l *Loader) Stop(context.Context) error { return nil }
 
 func (l *Loader) reload(ctx context.Context) {
-	n, err := LoadServiceDefs(ctx, l.dir, l.reg, l.log)
+	n, err := LoadServiceDefs(ctx, l.dir, l.reg, l.checks, l.log)
 	if err != nil {
 		l.log.Warn("service-definition reload failed", "dir", l.dir, "error", err)
 		return

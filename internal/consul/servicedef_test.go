@@ -50,7 +50,7 @@ func TestLoadServiceDefs(t *testing.T) {
 	write("ignored.txt", `{"service":{"name":"nope"}}`)
 
 	reg := &captureReg{}
-	n, err := LoadServiceDefs(context.Background(), dir, reg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	n, err := LoadServiceDefs(context.Background(), dir, reg, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatalf("LoadServiceDefs: %v", err)
 	}

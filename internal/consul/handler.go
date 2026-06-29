@@ -104,7 +104,10 @@ type Options struct {
 	Dumper Dumper
 	// Members backs /v1/agent/members from real seed membership (optional, M18).
 	Members func(ctx context.Context) any
-	Log     *slog.Logger
+	// Checks runs agent-side active health checks for registered services
+	// (optional; agent only).
+	Checks ChecksReporter
+	Log    *slog.Logger
 }
 
 // Handler implements the Consul-compatible HTTP API.
@@ -117,6 +120,7 @@ type Handler struct {
 	prop     *observability.Propagation
 	dumper   Dumper
 	members  func(ctx context.Context) any
+	checks   ChecksReporter
 	rrl      *ratelimit.Limiter
 	waiters  chan struct{}
 	log      *slog.Logger
@@ -139,6 +143,7 @@ func NewHandler(opts Options) http.Handler {
 		prop:     opts.Prop,
 		dumper:   opts.Dumper,
 		members:  opts.Members,
+		checks:   opts.Checks,
 		rrl:      ratelimit.New(opts.RateLimit, opts.Clock),
 		waiters:  make(chan struct{}, opts.MaxWaiters),
 		log:      opts.Log,
@@ -216,10 +221,14 @@ func (h *Handler) registerService(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Name is required", http.StatusBadRequest)
 		return
 	}
-	reg := model.Registration{Node: h.node(), Services: []model.ServiceInstance{inputToService(in)}, Generation: 1}
+	svc := inputToService(in)
+	reg := model.Registration{Node: h.node(), Services: []model.ServiceInstance{svc}, Generation: 1}
 	if err := h.reg.RegisterServices(r.Context(), reg); err != nil {
 		h.fail(w, err)
 		return
+	}
+	if h.checks != nil {
+		h.checks.Set(svc.ID, activeChecks(in)) // start/replace any HTTP/TCP/UDP/exec checks
 	}
 	w.WriteHeader(http.StatusOK)
 }
@@ -228,9 +237,13 @@ func (h *Handler) deregisterService(w http.ResponseWriter, r *http.Request) {
 	if !h.authorizeWrite(w, r) {
 		return
 	}
-	if err := h.reg.RemoveService(r.Context(), r.PathValue("serviceID")); err != nil {
+	serviceID := r.PathValue("serviceID")
+	if err := h.reg.RemoveService(r.Context(), serviceID); err != nil {
 		h.fail(w, err)
 		return
+	}
+	if h.checks != nil {
+		h.checks.Remove(serviceID)
 	}
 	w.WriteHeader(http.StatusOK)
 }

@@ -66,6 +66,9 @@ type Config struct {
 	// ConfigDir is a directory of Consul-compatible service-definition JSON files
 	// loaded at start and re-read on SIGHUP (M13). Optional.
 	ConfigDir string `yaml:"config_dir"`
+	// EnableScriptChecks permits agent-side exec/script health checks (they run an
+	// arbitrary local binary). Default false — HTTP/TCP/UDP checks need no opt-in.
+	EnableScriptChecks bool `yaml:"enable_script_checks"`
 
 	// Cluster describes membership and seed discovery.
 	Cluster Cluster `yaml:"cluster"`

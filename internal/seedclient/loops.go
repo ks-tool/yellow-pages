@@ -67,7 +67,7 @@ func (l *RenewLoop) renewOnce(ctx context.Context) {
 		return
 	}
 	res := l.proxy.renewAll(ctx)
-	if res.Succeeded == 0 {
+	if res.Total > 0 && res.Succeeded == 0 {
 		l.log.Warn("renew reached no seeds", "total", res.Total, "errors", len(res.Errors))
 	}
 }

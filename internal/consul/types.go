@@ -144,8 +144,17 @@ func (in registerInput) firstTTL() time.Duration {
 	return 0
 }
 
-// checkInput captures only the TTL we bridge to the lease; other check kinds are
-// accepted and ignored.
+// checkInput is a Consul check: a TTL bridges to the lease (M13); HTTP/TCP/UDP/Args
+// are active checks the agent runs itself (only one kind per check).
 type checkInput struct {
-	TTL string `json:"TTL"`
+	TTL           string              `json:"TTL"`
+	HTTP          string              `json:"HTTP"`
+	Method        string              `json:"Method"`
+	Header        map[string][]string `json:"Header"`
+	TCP           string              `json:"TCP"`
+	UDP           string              `json:"UDP"`
+	Args          []string            `json:"Args"`
+	Interval      string              `json:"Interval"`
+	Timeout       string              `json:"Timeout"`
+	TLSSkipVerify bool                `json:"TLSSkipVerify"`
 }

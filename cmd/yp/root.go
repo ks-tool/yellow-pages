@@ -35,6 +35,7 @@ import (
 	"github.com/ks-tool/yellow-pages/internal/consuldns"
 	"github.com/ks-tool/yellow-pages/internal/cred"
 	"github.com/ks-tool/yellow-pages/internal/federation"
+	"github.com/ks-tool/yellow-pages/internal/healthcheck"
 	"github.com/ks-tool/yellow-pages/internal/membership"
 	"github.com/ks-tool/yellow-pages/internal/model"
 	"github.com/ks-tool/yellow-pages/internal/observability"
@@ -283,14 +284,14 @@ func buildComponents(cfg *config.Config, metrics *observability.Prometheus, clk 
 			membersFn = func(ctx context.Context) any { return syncer.Members(ctx) }
 			components = append(components, syncer)
 		}
-		if c := consulComponent(cfg, seedReg, seedNode, seeds, watcher, sec, prop, seedReg, membersFn, logger); c != nil {
+		if c := consulComponent(cfg, seedReg, seedNode, seeds, watcher, sec, prop, seedReg, membersFn, nil, logger); c != nil {
 			components = append(components, c)
 		}
 		if c := dnsComponent(cfg, seedReg, prop, logger); c != nil {
 			components = append(components, c)
 		}
 		if cfg.ConfigDir != "" {
-			components = append(components, consul.NewLoader(cfg.ConfigDir, seedReg, logger))
+			components = append(components, consul.NewLoader(cfg.ConfigDir, seedReg, nil, logger))
 		}
 
 	case config.RoleAgent:
@@ -336,6 +337,16 @@ func buildComponents(cfg *config.Config, metrics *observability.Prometheus, clk 
 			Prop:       prop,
 			Log:        logger,
 		})
+		// Active health checks (HTTP/TCP/UDP/exec): the Monitor probes hosted
+		// services and gates their lease — passing keeps them alive, failing lets
+		// the lease lapse to critical. Exec is opt-in (enable_script_checks).
+		checkMonitor := healthcheck.New(healthcheck.Options{
+			Keeper:       proxy,
+			EnableScript: cfg.EnableScriptChecks,
+			Clock:        clk,
+			Log:          logger,
+		})
+		proxy.SetCheckGate(checkMonitor.Active)
 		// The local-agent-proxy listens on a trusted loopback for local apps;
 		// ownership authz is enforced by the seeds, not here, so the local server
 		// runs with authz disabled (audit still records writes).
@@ -359,15 +370,16 @@ func buildComponents(cfg *config.Config, metrics *observability.Prometheus, clk 
 			seedclient.NewRenewLoop(proxy, cfg.HeartbeatInterval, clk, logger),
 			seedclient.NewRefreshLoop(cache, cfg.Agent.CacheMaxAge, clk, logger),
 			watch.NewFlusher(agentWatcher, cfg.DataDir, cfg.HeartbeatInterval, clk, logger),
+			checkMonitor,
 		)
-		if c := consulComponent(cfg, proxy, node, seeds, agentWatcher, sec, prop, proxy, nil, logger); c != nil {
+		if c := consulComponent(cfg, proxy, node, seeds, agentWatcher, sec, prop, proxy, nil, checkMonitor, logger); c != nil {
 			components = append(components, c)
 		}
 		if c := dnsComponent(cfg, proxy, prop, logger); c != nil {
 			components = append(components, c)
 		}
 		if cfg.ConfigDir != "" {
-			components = append(components, consul.NewLoader(cfg.ConfigDir, proxy, logger))
+			components = append(components, consul.NewLoader(cfg.ConfigDir, proxy, checkMonitor, logger))
 		}
 	}
 
@@ -408,7 +420,7 @@ func ttlSeconds(d time.Duration) uint32 {
 // consulComponent builds the Consul-compatible HTTP component when its listener
 // is enabled, backed by reg (the seed's Store or the agent's Proxy) and watcher
 // (blocking queries + X-Consul-Index).
-func consulComponent(cfg *config.Config, reg consul.Registry, node model.Node, seeds []string, watcher *watch.Watcher, sec security, prop *observability.Propagation, dumper consul.Dumper, members func(ctx context.Context) any, logger *slog.Logger) app.Component {
+func consulComponent(cfg *config.Config, reg consul.Registry, node model.Node, seeds []string, watcher *watch.Watcher, sec security, prop *observability.Propagation, dumper consul.Dumper, members func(ctx context.Context) any, checks consul.ChecksReporter, logger *slog.Logger) app.Component {
 	if !cfg.Listeners.ConsulHTTP.Enabled {
 		return nil
 	}
@@ -430,6 +442,7 @@ func consulComponent(cfg *config.Config, reg consul.Registry, node model.Node, s
 		Prop:      prop,
 		Dumper:    dumper,
 		Members:   members,
+		Checks:    checks,
 		Log:       logger,
 	})
 	return consul.NewComponent(cfg.Listeners.ConsulHTTP.Addr(), handler, logger)

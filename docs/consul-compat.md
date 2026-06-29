@@ -10,28 +10,28 @@ clean gRPC core. Status as of v1.
 
 ## HTTP (`:8500`)
 
-| Method | Endpoint                                                                            | Priority  | Status                                        |
-|--------|-------------------------------------------------------------------------------------|-----------|-----------------------------------------------|
-| GET    | `/v1/agent/self`                                                                    | 🔴 must   | ✅ Datacenter/NodeName/Version                 |
-| PUT    | `/v1/agent/service/register`                                                        | 🔴 must   | ✅ lenient (Check/Checks→TTL; unknown ignored) |
-| PUT    | `/v1/agent/service/deregister/:id`                                                  | 🔴 must   | ✅                                             |
-| GET    | `/v1/agent/services`                                                                | 🟠 should | ✅                                             |
-| PUT    | `/v1/agent/service/maintenance/:id`                                                 | 🟠 should | ✅ (best-effort on agent)                      |
-| PUT    | `/v1/agent/check/{pass,warn,fail,update}/:id`                                       | 🟠 should | ✅ TTL bridge                                  |
-| PUT    | `/v1/agent/check/{register,deregister}`                                             | 🟠 should | ✅ accepted                                    |
-| GET    | `/v1/agent/checks`                                                                  | 🟡 could  | ✅                                             |
-| GET    | `/v1/agent/health/service/name/:name`                                               | 🟠 should | ✅ (+`format=text`)                            |
-| GET    | `/v1/catalog/services`                                                              | 🔴 must   | ✅                                             |
-| GET    | `/v1/catalog/service/:service`                                                      | 🔴 must   | ✅ flat schema                                 |
-| GET    | `/v1/catalog/nodes`                                                                 | 🟠 should | ✅                                             |
-| GET    | `/v1/catalog/datacenters`                                                           | 🟠 should | ✅ single-DC                                   |
-| PUT    | `/v1/catalog/register` · `/deregister`                                              | 🟠 should | ✅ backfill                                    |
-| GET    | `/v1/health/service/:service`                                                       | 🔴 must   | ✅ nested schema + `?passing`                  |
-| GET    | `/v1/health/checks/:service`                                                        | 🟠 should | ✅                                             |
-| GET    | `/v1/health/state/:state`                                                           | 🟠 should | ✅                                             |
-| GET    | `/v1/status/leader` · `/peers`                                                      | 🔴 must   | ✅ shim (`addr:8300`)                          |
-| —      | blocking `?index`/`?wait`, `?stale`/`?consistent`, `?tag`, `?filter`(subset), token | 🔴 must   | ✅                                             |
-| —      | `/v1/kv` · `/connect` · `/session` · `/txn` · `/operator` · `/query`                | —         | ❌ out of scope                                |
+| Method | Endpoint                                                                            | Priority  | Status                                                             |
+|--------|-------------------------------------------------------------------------------------|-----------|--------------------------------------------------------------------|
+| GET    | `/v1/agent/self`                                                                    | 🔴 must   | ✅ Datacenter/NodeName/Version                                      |
+| PUT    | `/v1/agent/service/register`                                                        | 🔴 must   | ✅ lenient (TTL + active HTTP/TCP/UDP/exec checks; unknown ignored) |
+| PUT    | `/v1/agent/service/deregister/:id`                                                  | 🔴 must   | ✅                                                                  |
+| GET    | `/v1/agent/services`                                                                | 🟠 should | ✅                                                                  |
+| PUT    | `/v1/agent/service/maintenance/:id`                                                 | 🟠 should | ✅ (best-effort on agent)                                           |
+| PUT    | `/v1/agent/check/{pass,warn,fail,update}/:id`                                       | 🟠 should | ✅ TTL bridge                                                       |
+| PUT    | `/v1/agent/check/{register,deregister}`                                             | 🟠 should | ✅ accepted                                                         |
+| GET    | `/v1/agent/checks`                                                                  | 🟡 could  | ✅                                                                  |
+| GET    | `/v1/agent/health/service/name/:name`                                               | 🟠 should | ✅ (+`format=text`)                                                 |
+| GET    | `/v1/catalog/services`                                                              | 🔴 must   | ✅                                                                  |
+| GET    | `/v1/catalog/service/:service`                                                      | 🔴 must   | ✅ flat schema                                                      |
+| GET    | `/v1/catalog/nodes`                                                                 | 🟠 should | ✅                                                                  |
+| GET    | `/v1/catalog/datacenters`                                                           | 🟠 should | ✅ single-DC                                                        |
+| PUT    | `/v1/catalog/register` · `/deregister`                                              | 🟠 should | ✅ backfill                                                         |
+| GET    | `/v1/health/service/:service`                                                       | 🔴 must   | ✅ nested schema + `?passing`                                       |
+| GET    | `/v1/health/checks/:service`                                                        | 🟠 should | ✅                                                                  |
+| GET    | `/v1/health/state/:state`                                                           | 🟠 should | ✅                                                                  |
+| GET    | `/v1/status/leader` · `/peers`                                                      | 🔴 must   | ✅ shim (`addr:8300`)                                               |
+| —      | blocking `?index`/`?wait`, `?stale`/`?consistent`, `?tag`, `?filter`(subset), token | 🔴 must   | ✅                                                                  |
+| —      | `/v1/kv` · `/connect` · `/session` · `/txn` · `/operator` · `/query`                | —         | ❌ out of scope                                                     |
 
 ## DNS (`:8600`, UDP+TCP)
 
@@ -62,6 +62,12 @@ rendered under whichever zone the query arrived on.
   fresh fan-out (best-effort freshness) but does **not** promise linearizability.
 - **TTL is a tombstone.** A missed deregister leaves a ghost until its TTL; lower
   TTL for faster removal, at the cost of more heartbeats.
+- **Active checks gate the lease.** A service registered with an `HTTP`/`TCP`/`UDP`
+  or script (`Args`) check is probed by the agent on its `Interval`: while it
+  passes the agent refreshes the lease, when it fails the agent stops, so the
+  registry lets the instance go critical and then drops it (TTL + grace). Set the
+  check `TTL` field instead for a passive heartbeat. Script checks run a local
+  binary, so they require `enable_script_checks` and an absolute path (no shell).
 - **NTP is a precondition** for the `last_seen` tiebreak (generation dominates);
   `yp_agent_seed_clock_skew_seconds` is exposed and alertable.
 - **Single-DC in v1.** `datacenter` is always present (DNS/`?dc`); cross-DC

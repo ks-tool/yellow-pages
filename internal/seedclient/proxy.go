@@ -57,6 +57,37 @@ type Proxy struct {
 
 	mu     sync.Mutex
 	hosted map[string]model.ServiceInstance // serviceID -> definition
+	// checkGate reports services with active health checks (managed by the
+	// healthcheck Monitor); the blanket renew loop skips them so a failing check
+	// can let the lease lapse. nil = renew everything (no active checks).
+	checkGate func(serviceID string) bool
+}
+
+// SetCheckGate wires the active-check predicate (the healthcheck Monitor's
+// Active). Services it reports are kept alive by the Monitor, not the renew loop.
+func (p *Proxy) SetCheckGate(fn func(serviceID string) bool) {
+	p.mu.Lock()
+	p.checkGate = fn
+	p.mu.Unlock()
+}
+
+// KeepAlive re-asserts a hosted service on the seeds (idempotent: refreshes the
+// lease, or re-creates it if it had lapsed). The healthcheck Monitor calls it on
+// every passing probe. A no-op for a service no longer hosted.
+func (p *Proxy) KeepAlive(ctx context.Context, serviceID string) error {
+	p.mu.Lock()
+	svc, ok := p.hosted[serviceID]
+	p.mu.Unlock()
+	if !ok {
+		return nil
+	}
+	res := p.client.Register(ctx, model.Registration{
+		Node: p.node, Services: []model.ServiceInstance{svc}, Generation: svc.Generation,
+	})
+	if !res.OK(p.quorum) {
+		return status.Errorf(codes.Unavailable, "keep-alive reached %d/%d seeds", res.Succeeded, res.Total)
+	}
+	return nil
 }
 
 // Router federates remote-datacenter reads (M17, v1.x). The federation Pool
@@ -142,6 +173,7 @@ func (p *Proxy) RegisterServices(ctx context.Context, reg model.Registration) er
 
 	p.mu.Lock()
 	for _, s := range reg.Services {
+		s.Generation = reg.Generation // remember it so KeepAlive refreshes, not churns
 		p.hosted[s.ID] = s
 	}
 	p.mu.Unlock()
@@ -439,5 +471,23 @@ func (p *Proxy) hostedCount() int {
 
 // renewAll refreshes every hosted lease on the seeds.
 func (p *Proxy) renewAll(ctx context.Context) WriteResult {
-	return p.client.Renew(ctx, p.node.ID, nil)
+	p.mu.Lock()
+	gate := p.checkGate
+	var ids []string
+	if gate != nil {
+		for id := range p.hosted {
+			if !gate(id) { // active-checked services are kept alive by the Monitor
+				ids = append(ids, id)
+			}
+		}
+	}
+	p.mu.Unlock()
+
+	if gate == nil {
+		return p.client.Renew(ctx, p.node.ID, nil) // fast path: refresh every lease
+	}
+	if len(ids) == 0 {
+		return WriteResult{} // nothing to renew here (all services are actively checked)
+	}
+	return p.client.Renew(ctx, p.node.ID, ids)
 }
