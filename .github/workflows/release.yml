@@ -1,5 +1,5 @@
 # Release pipeline (M16): on a SemVer tag, build signed multi-arch artifacts with
-# an SBOM, SLSA provenance, a scanned distroless image and checksums.
+# an SBOM, SLSA provenance, a scanned scratch image and checksums.
 name: release
 
 on:

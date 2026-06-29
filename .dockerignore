@@ -1,4 +1,4 @@
-# Build context for the distroless yp image needs only the Go sources + modules.
+# Build context for the scratch yp image needs only the Go sources + modules.
 .git
 .github
 _legacy

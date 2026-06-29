@@ -107,7 +107,7 @@ The DNS/filter parsers are fuzz-tested; rate-limit keys are the source **host**
 
 Release artifacts (`release.yml`) ship with an **SBOM** (syft), **cosign**
 signatures, **SLSA** provenance, checksums, and a **trivy**-scanned multi-arch
-**distroless** image (non-root). `govulncheck` is a pinned tool dependency and
+**scratch** image (non-root, CA bundle only). `govulncheck` is a pinned tool dependency and
 runs in CI; the dependency budget is deliberately small (no HTTP framework, no
 second JSON library).
 
