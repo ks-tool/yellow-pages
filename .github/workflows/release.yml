@@ -23,6 +23,18 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26.4"
+      # `make verify` calls golangci-lint and buf directly (govulncheck is a pinned
+      # `go tool`), so both must be on PATH — install them at the versions the gate
+      # is validated against.
+      - uses: bufbuild/buf-setup-action@v1
+        with:
+          version: "1.71.0"
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install golangci-lint
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh \
+            | sh -s -- -b "$(go env GOPATH)/bin" v2.11.3
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       - run: make verify
 
   binaries:
@@ -52,6 +64,9 @@ jobs:
           file: ./go.mod
           format: spdx-json
           output-file: "yp_${{ github.ref_name }}_${{ matrix.goos }}_${{ matrix.goarch }}.sbom.spdx.json"
+          # Don't attach to the release here — it doesn't exist yet (the `release`
+          # job creates it later and attaches the artifacts). Avoids a 404.
+          upload-release-assets: "false"
       - uses: actions/upload-artifact@v4
         with:
           name: yp-${{ matrix.goos }}-${{ matrix.goarch }}
@@ -83,7 +98,7 @@ jobs:
           build-args: VERSION=${{ github.ref_name }}
           tags: ghcr.io/${{ github.repository }}:${{ github.ref_name }}
       - name: Trivy scan (fail on HIGH/CRITICAL)
-        uses: aquasecurity/trivy-action@0.24.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ghcr.io/${{ github.repository }}:${{ github.ref_name }}
           exit-code: "1"
