@@ -1,0 +1,28 @@
+# golangci-lint v2 configuration.
+# The `standard` set (errcheck, govet, ineffassign, staticcheck, unused) plus a
+# security linter (gosec) and a few correctness/style linters.
+version: "2"
+
+linters:
+  default: standard
+  enable:
+    - gosec
+    - bodyclose
+    - misspell
+    - revive
+  exclusions:
+    rules:
+      # Test files exercise edge cases and don't need security hardening rules.
+      - path: _test\.go
+        linters:
+          - gosec
+      # Generated and quarantined legacy code is excluded entirely.
+      - path: (^|/)_legacy/
+        linters:
+          - gosec
+          - revive
+          - staticcheck
+
+formatters:
+  enable:
+    - gofmt

@@ -1,0 +1,93 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  GOFLAGS: -mod=readonly
+  GOTOOLCHAIN: local
+
+jobs:
+  build:
+    name: build / vet / test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.4"
+          check-latest: false
+      - name: Verify modules (go.sum)
+        run: go mod verify
+      - name: Tidy check
+        run: GOFLAGS= go mod tidy -diff
+      - name: Build
+        run: go build ./...
+      - name: Vet
+        run: go vet ./...
+      - name: Test (race)
+        run: go test -race ./...
+
+  lint:
+    name: golangci-lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.4"
+          check-latest: false
+      - uses: golangci/golangci-lint-action@v7
+        with:
+          version: latest
+
+  govulncheck:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.4"
+          check-latest: false
+      - name: Run govulncheck
+        run: go tool govulncheck ./...
+
+  buf:
+    name: buf lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Pin buf and run `buf lint` explicitly (same as `make buf-lint`). The
+      # composite buf-action@v1 also annotates/comments on pull_request events,
+      # which needs pull-requests:write and fails under this job's read-only token;
+      # an explicit lint has no such side effects.
+      - uses: bufbuild/buf-setup-action@v1
+        with:
+          version: "1.71.0"
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+      # Append-only is enforced locally by `make buf-breaking` (baseline = branch
+      # HEAD). The CI breaking-gate stays off until the greenfield branch lands on
+      # main: main still carries the legacy proto/service_discovery.proto, so a
+      # main baseline would falsely flag its intentional removal. Re-enable
+      # `buf breaking --against` with a main baseline once that merge happens.
+      - name: Lint proto contract
+        run: buf lint
+
+  e2e:
+    name: e2e (real Consul)
+    runs-on: ubuntu-latest # ubuntu runners ship Docker for testcontainers
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.4"
+          check-latest: false
+      - name: e2e suite
+        working-directory: e2e
+        run: go test -timeout 15m ./...

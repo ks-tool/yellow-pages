@@ -31,3 +31,7 @@ go.work.sum
 .idea/
 # .vscode/
 bin
+_legacy
+
+# Generated cross-language stubs (see buf.gen.yaml; published by the release pipeline)
+gen/

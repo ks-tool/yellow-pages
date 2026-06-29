@@ -1,0 +1,61 @@
+# yellow-pages seed configuration (M0 bootstrap sample).
+#
+# A seed is also an agent, but additionally maintains the in-memory registry of
+# agents/services for the cluster. Seeds do not sync with each other.
+
+role: seed
+node_name: seed-1
+datacenter: dc1
+data_dir: /var/lib/yellow-pages
+
+cluster:
+  name: default
+  # Other seeds in the cluster (optional for a single seed).
+  seeds:
+    - 127.0.0.1:9900
+
+ttl: 30s
+heartbeat_interval: 10s
+shutdown_timeout: 15s
+
+listeners:
+  grpc:
+    address: 127.0.0.1
+    port: 9900
+  consul_http:
+    enabled: true
+    address: 127.0.0.1
+    port: 8500
+  dns:
+    enabled: true
+    address: 127.0.0.1
+    port: 8600
+  # Prometheus /metrics endpoint (observability-core, M3).
+  metrics:
+    enabled: true
+    address: 127.0.0.1
+    port: 9901
+
+# Config bootstrap (seed-only, OFF by default). SENSITIVE — see docs/bootstrap.md.
+# Registers the BootstrapService RPC on the gRPC server above (no extra port) so
+# `yp bootstrap` can fetch a generated, sanitized agent/seed config. Auth is by
+# SHORT-LIVED tokens: the config holds only a signing key (never sent on the
+# wire); mint a token on the seed with `yp bootstrap create-token`.
+# bootstrap:
+#   enabled: true
+#   signing_key_file: /etc/yp/bootstrap.key  # or signing_key: "<openssl rand -base64 48>"
+#   token_ttl: 30s                  # default lifetime of a minted token
+#   allow_seed_join: false          # default: only agent configs are served
+#   advertise_seeds:                # seeds written into the served configs
+#     - seed-a.internal:9900
+#   rate_limit: 10
+
+# Consul-compatible DNS tuning (the listener is under listeners.dns above).
+dns:
+  # Served zone — replaces ".consul". Queries become "<svc>.service.<domain>".
+  # Default: consul.
+  domain: consul.
+  # Optional SECOND zone answered alongside `domain` (Consul's alt_domain).
+  # Handy during a cutover: keep ".consul" working while rolling out your own.
+  # Leave empty to disable. Example: mycorp.
+  # alt_domain: mycorp.

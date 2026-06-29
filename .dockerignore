@@ -1,0 +1,15 @@
+# Build context for the scratch yp image needs only the Go sources + modules.
+.git
+.github
+_legacy
+_t
+bin
+e2e
+deploy
+docs
+configs
+*.md
+docker-compose.yaml
+.golangci.yml
+buf.gen.yaml
+gen

@@ -1,0 +1,12 @@
+# Scrapes the four yp nodes' /metrics (in-network ports). Enable with:
+#   docker compose --profile monitoring up -d   ->   http://localhost:9090
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: yellow-pages
+    static_configs:
+      - targets: [seed1:9901, seed2:9901]
+        labels: { role: seed, cluster: demo }
+      - targets: [agent1:9901, agent2:9901]
+        labels: { role: agent, cluster: demo }

@@ -1,0 +1,12 @@
+# Test-stand seed. Binds 0.0.0.0 so the other containers can reach it
+# (loopback is the secure default; this is an explicit container-network choice).
+role: seed
+node_name: seed1
+datacenter: dc1
+cluster:
+  name: demo
+listeners:
+  grpc: { address: 0.0.0.0, port: 9900 }
+  consul_http: { enabled: true, address: 0.0.0.0, port: 8500 }
+  dns: { enabled: true, address: 0.0.0.0, port: 8600 }
+  metrics: { enabled: true, address: 0.0.0.0, port: 9901 }

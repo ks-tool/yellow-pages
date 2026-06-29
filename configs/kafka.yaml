@@ -1,0 +1,8 @@
+name: kafka
+address: kafka
+port: 9092
+metadata:
+  key: value
+tags:
+  - kafka
+  - standalone

@@ -1,0 +1,14 @@
+# buf configuration for the discovery.v1 wire contract.
+# The proto module root is `proto/`, so files map as discovery/v1/*.proto to
+# package discovery.v1 (PACKAGE_DIRECTORY_MATCH).
+version: v2
+modules:
+  - path: proto
+lint:
+  use:
+    - STANDARD
+breaking:
+  # The breaking-gate is wired into CI but only enforced from the first real
+  # proto change (M8). STANDARD append-only policy is documented in the proto.
+  use:
+    - FILE
