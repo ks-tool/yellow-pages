@@ -1,0 +1,10 @@
+# Loads every dashboard JSON under /var/lib/grafana/dashboards.
+apiVersion: 1
+providers:
+  - name: yellow-pages
+    type: file
+    disableDeletion: false
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

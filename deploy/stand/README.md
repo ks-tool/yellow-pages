@@ -46,11 +46,13 @@ dig @127.0.0.1 -p 8612 -t SRV web.service.consul +short
 ## Metrics (optional)
 
 ```bash
-docker compose --profile monitoring up -d --build       # adds Prometheus
-open http://localhost:9090                               # all four nodes scraped
+docker compose --profile monitoring up -d --build       # adds Prometheus + Grafana
+open http://localhost:9090                               # Prometheus — all four nodes scraped
+open http://localhost:3000                               # Grafana — "yellow-pages" dashboard (anonymous)
 ```
 
-See `docs/slo.md` for the SLIs/SLOs exposed at each `/metrics`.
+The Grafana datasource and dashboard are auto-provisioned (no login). See
+`docs/dashboard.md` for the panels/metrics and `docs/slo.md` for the SLIs/SLOs.
 
 ## Notes
 

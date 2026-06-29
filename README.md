@@ -114,6 +114,7 @@ Full reference: [`docs/configuration.md`](docs/configuration.md). Samples:
 | [docs/consul-compat.md](docs/consul-compat.md) | Consul HTTP/DNS compatibility matrix + AP limits                         |
 | [docs/operations.md](docs/operations.md)       | Runbook: topology, DNS delegation, monitoring, troubleshooting, upgrades |
 | [docs/slo.md](docs/slo.md)                     | SLIs / SLOs / alerts                                                     |
+| [docs/dashboard.md](docs/dashboard.md)         | Prometheus metric reference + Grafana dashboard                          |
 | [docs/migration.md](docs/migration.md)         | Consul → yp cutover runbook (import, shadow-diff, rollback)              |
 | [docs/bootstrap.md](docs/bootstrap.md)         | Central config bootstrap over gRPC (short-lived tokens)                  |
 | [docs/federation.md](docs/federation.md)       | Cross-DC reads (v1.x, feature-flagged)                                   |

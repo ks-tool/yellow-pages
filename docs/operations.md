@@ -67,7 +67,8 @@ On `SIGTERM`/`SIGINT` an agent drains in order: **readiness → NOT_SERVING**, w
 ## Monitoring
 
 Scrape `/metrics` (enable `listeners.metrics`). The SLIs and their SLOs/alerts are
-in [slo.md](slo.md). The ones to alert on:
+in [slo.md](slo.md); a metric reference and a ready Grafana dashboard are in
+[dashboard.md](dashboard.md). The signals to alert on:
 
 | Signal              | Metric                                       | Watch for                                 |
 |---------------------|----------------------------------------------|-------------------------------------------|

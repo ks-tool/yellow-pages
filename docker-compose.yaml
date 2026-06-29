@@ -75,6 +75,24 @@ services:
     ports: ["9090:9090"]
     networks: [yp]
 
+  # Optional: Grafana with the yellow-pages dashboard auto-provisioned (anonymous
+  # access, no login). Open http://localhost:3000. Enable with `--profile monitoring`.
+  grafana:
+    image: grafana/grafana:11.2.0
+    container_name: yp-grafana
+    profiles: [monitoring]
+    restart: unless-stopped
+    depends_on: [prometheus]
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Admin"
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    volumes:
+      - "./deploy/grafana/provisioning:/etc/grafana/provisioning:ro"
+      - "./deploy/grafana/yellow-pages.json:/var/lib/grafana/dashboards/yellow-pages.json:ro"
+    ports: ["3000:3000"]
+    networks: [yp]
+
 networks:
   yp:
     driver: bridge
