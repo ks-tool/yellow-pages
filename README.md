@@ -62,12 +62,12 @@ Prometheus profile.
 
 ## Served surfaces
 
-| Surface | Default | Purpose |
-|---|---|---|
-| **Native gRPC** `discovery.v1` | `:9900` (always on) | `AgentService` (Register/Renew/Deregister/Lookup/Watch) + `BootstrapService`. Use the [Go SDK / `yp://` resolver](docs/clients.md). |
-| **Consul HTTP** | `:8500` (off) | `/v1/agent`, `/v1/catalog`, `/v1/health`, blocking queries, `?stale`/`?consistent`, `?filter`, tokens. See the [compat matrix](docs/consul-compat.md). |
-| **Consul DNS** | `:8600` UDP+TCP (off) | A/AAAA/SRV/TXT/SOA/NS; configurable zone (`dns.domain` / `dns.alt_domain`). |
-| **Prometheus** `/metrics` | `:9901` (off) | SLIs (propagation, divergence, clock skew, fan-out). See [`docs/slo.md`](docs/slo.md). |
+| Surface                        | Default               | Purpose                                                                                                                                                |
+|--------------------------------|-----------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------|
+| **Native gRPC** `discovery.v1` | `:9900` (always on)   | `AgentService` (Register/Renew/Deregister/Lookup/Watch) + `BootstrapService`. Use the [Go SDK / `yp://` resolver](docs/clients.md).                    |
+| **Consul HTTP**                | `:8500` (off)         | `/v1/agent`, `/v1/catalog`, `/v1/health`, blocking queries, `?stale`/`?consistent`, `?filter`, tokens. See the [compat matrix](docs/consul-compat.md). |
+| **Consul DNS**                 | `:8600` UDP+TCP (off) | A/AAAA/SRV/TXT/SOA/NS; configurable zone (`dns.domain` / `dns.alt_domain`).                                                                            |
+| **Prometheus** `/metrics`      | `:9901` (off)         | SLIs (propagation, divergence, clock skew, fan-out). See [`docs/slo.md`](docs/slo.md).                                                                 |
 
 All listeners bind `127.0.0.1` by default; binding to `0.0.0.0` is an explicit,
 firewall-it choice.
@@ -94,10 +94,10 @@ role: agent
 datacenter: dc1
 cluster:
   name: prod
-  seeds: [seed-a:9900, seed-b:9900]
+  seeds: [ seed-a:9900, seed-b:9900 ]
 listeners:
   consul_http: { enabled: true }
-  dns:         { enabled: true }
+  dns: { enabled: true }
 ```
 
 Full reference: [`docs/configuration.md`](docs/configuration.md). Samples:
@@ -105,15 +105,20 @@ Full reference: [`docs/configuration.md`](docs/configuration.md). Samples:
 
 ## Documentation
 
-| Doc | About |
-|---|---|
-| [docs/configuration.md](docs/configuration.md) | Every config key, type, default and rule |
-| [docs/consul-compat.md](docs/consul-compat.md) | Consul HTTP/DNS compatibility matrix + AP limits |
-| [docs/clients.md](docs/clients.md) | Go SDK, `yp://` gRPC resolver, cross-language stubs |
-| [docs/slo.md](docs/slo.md) | SLIs / SLOs / alerts |
-| [docs/migration.md](docs/migration.md) | Consul → yp cutover runbook (import, shadow-diff, rollback) |
-| [docs/bootstrap.md](docs/bootstrap.md) | Central config bootstrap over gRPC (short-lived tokens) |
-| [SECURITY.md](SECURITY.md) | Security model, TLS/mTLS, ACLs, hardening |
+| Doc                                            | About                                                                    |
+|------------------------------------------------|--------------------------------------------------------------------------|
+| [docs/architecture.md](docs/architecture.md)   | How it works: AP model, fan-out/merge/LWW, watch index, why no Raft      |
+| [docs/configuration.md](docs/configuration.md) | Every config key, type, default and rule                                 |
+| [docs/grpc-api.md](docs/grpc-api.md)           | Native `discovery.v1` gRPC contract (AgentService / BootstrapService)    |
+| [docs/clients.md](docs/clients.md)             | Go SDK, `yp://` gRPC resolver, cross-language stubs                      |
+| [docs/consul-compat.md](docs/consul-compat.md) | Consul HTTP/DNS compatibility matrix + AP limits                         |
+| [docs/operations.md](docs/operations.md)       | Runbook: topology, DNS delegation, monitoring, troubleshooting, upgrades |
+| [docs/slo.md](docs/slo.md)                     | SLIs / SLOs / alerts                                                     |
+| [docs/migration.md](docs/migration.md)         | Consul → yp cutover runbook (import, shadow-diff, rollback)              |
+| [docs/bootstrap.md](docs/bootstrap.md)         | Central config bootstrap over gRPC (short-lived tokens)                  |
+| [docs/federation.md](docs/federation.md)       | Cross-DC reads (v1.x, feature-flagged)                                   |
+| [docs/membership.md](docs/membership.md)       | Seed anti-entropy / self-healing (v1.x, feature-flagged)                 |
+| [SECURITY.md](SECURITY.md)                     | Security model, TLS/mTLS, ACLs, hardening                                |
 
 ## What it is not
 
