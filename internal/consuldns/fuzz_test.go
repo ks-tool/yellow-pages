@@ -16,10 +16,7 @@
 
 package consuldns
 
-import (
-	"testing"
-	"time"
-)
+import "testing"
 
 // FuzzParseName ensures the DNS name parser never panics on arbitrary input.
 func FuzzParseName(f *testing.F) {
@@ -32,25 +29,4 @@ func FuzzParseName(f *testing.F) {
 	f.Fuzz(func(_ *testing.T, name string) {
 		_ = parseName(name, "consul.")
 	})
-}
-
-func TestRRLRefusesOverLimit(t *testing.T) {
-	t.Parallel()
-	r := newRateLimiter(2)
-	fixed := time.Unix(1000, 0)
-	r.now = func() time.Time { return fixed }
-
-	if !r.allow("1.2.3.4") {
-		t.Fatal("first query should be allowed")
-	}
-	if !r.allow("1.2.3.4") {
-		t.Fatal("second query should be allowed")
-	}
-	if r.allow("1.2.3.4") {
-		t.Error("third query in the window should be refused")
-	}
-	// A different client is independent.
-	if !r.allow("5.6.7.8") {
-		t.Error("other client should be allowed")
-	}
 }

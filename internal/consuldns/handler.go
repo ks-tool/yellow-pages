@@ -27,9 +27,11 @@ import (
 
 	"github.com/miekg/dns"
 
+	"github.com/ks-tool/yellow-pages/internal/clock"
 	"github.com/ks-tool/yellow-pages/internal/health"
 	"github.com/ks-tool/yellow-pages/internal/model"
 	"github.com/ks-tool/yellow-pages/internal/observability"
+	"github.com/ks-tool/yellow-pages/internal/ratelimit"
 )
 
 // Resolver is the merged read path the DNS interface projects (the agent Proxy
@@ -50,6 +52,8 @@ type Config struct {
 	Truncate     bool
 	// RateLimit caps queries-per-second per client (0 = unlimited; RRL).
 	RateLimit int
+	// Clock is the time source for the rate-limit window (defaults to System).
+	Clock clock.Clock
 }
 
 // Handler answers DNS queries for the served zone.
@@ -57,7 +61,7 @@ type Handler struct {
 	resolver Resolver
 	cfg      Config
 	prop     *observability.Propagation
-	rrl      *rateLimiter
+	rrl      *ratelimit.Limiter
 	log      *slog.Logger
 }
 
@@ -72,7 +76,7 @@ func NewHandler(resolver Resolver, cfg Config, prop *observability.Propagation, 
 	if cfg.AltDomain != "" && !strings.HasSuffix(cfg.AltDomain, ".") {
 		cfg.AltDomain += "."
 	}
-	return &Handler{resolver: resolver, cfg: cfg, prop: prop, rrl: newRateLimiter(cfg.RateLimit), log: log}
+	return &Handler{resolver: resolver, cfg: cfg, prop: prop, rrl: ratelimit.New(cfg.RateLimit, cfg.Clock), log: log}
 }
 
 // domainFor returns the served zone (primary or alt) that name falls under, with
@@ -95,7 +99,7 @@ func (h *Handler) domainFor(name string) (string, bool) {
 // ServeDNS implements dns.Handler.
 func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	h.prop.CountRequest("dns")
-	if !h.rrl.allow(clientIP(w)) {
+	if !h.rrl.Allow(clientIP(w)) {
 		resp := new(dns.Msg)
 		resp.SetRcode(req, dns.RcodeRefused)
 		_ = w.WriteMsg(resp)
@@ -200,7 +204,7 @@ func (h *Handler) renderService(resp *dns.Msg, q dns.Question, entries []model.S
 func (h *Handler) appendAddresses(resp *dns.Msg, q dns.Question, entries []model.ServiceEntry, wantV6 bool) {
 	count := 0
 	for _, e := range entries {
-		ip := net.ParseIP(serviceAddr(e))
+		ip := net.ParseIP(e.ReachableAddress())
 		if ip == nil {
 			continue
 		}
@@ -238,10 +242,10 @@ func (h *Handler) renderNode(resp *dns.Msg, q dns.Question, e model.ServiceEntry
 // address, else a synthetic <hexip>.addr.<dc>. The target is rendered under dom
 // (the zone the query arrived on) so an alt-domain query stays self-consistent.
 func (h *Handler) srvTarget(e model.ServiceEntry, dc, dom string) (string, net.IP) {
-	addr := serviceAddr(e)
+	addr := e.ReachableAddress()
 	ip := net.ParseIP(addr)
 	if addr == e.Node.Address || ip == nil {
-		return nodeName(e.Node) + ".node." + dc + "." + dom, net.ParseIP(e.Node.Address)
+		return e.Node.DisplayName() + ".node." + dc + "." + dom, net.ParseIP(e.Node.Address)
 	}
 	return hexIP(ip) + ".addr." + dc + "." + dom, ip
 }
@@ -302,20 +306,6 @@ func filterNode(entries []model.ServiceEntry, nodeName string) []model.ServiceEn
 		}
 	}
 	return out
-}
-
-func serviceAddr(e model.ServiceEntry) string {
-	if e.Service.Address != "" {
-		return e.Service.Address
-	}
-	return e.Node.Address
-}
-
-func nodeName(n model.Node) string {
-	if n.Name != "" {
-		return n.Name
-	}
-	return n.ID
 }
 
 func weight16(w uint32) uint16 {

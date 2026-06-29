@@ -39,6 +39,15 @@ type Node struct {
 	TaggedAddresses map[string]string
 }
 
+// DisplayName is the node's name, falling back to its ID — the node label the
+// Consul HTTP and DNS surfaces present.
+func (n Node) DisplayName() string {
+	if n.Name != "" {
+		return n.Name
+	}
+	return n.ID
+}
+
 // ServiceInstance is one service instance: its stable definition plus the
 // per-service lease state. Identity within an agent is (Node.ID, ID); Address
 // and Port are mutable data, not identity.
@@ -64,6 +73,17 @@ type ServiceInstance struct {
 	LastSeen time.Time
 	// Generation is the client-supplied data version (see Registration).
 	Generation uint64
+}
+
+// WinsLWW reports whether s strictly beats other under the last-writer-wins key:
+// higher Generation, or equal Generation with a later server-stamped LastSeen.
+// It is the one ordering used by both the cross-seed read merge (health.MergeLWW)
+// and the seed anti-entropy merge (store.Merge).
+func (s ServiceInstance) WinsLWW(other ServiceInstance) bool {
+	if s.Generation != other.Generation {
+		return s.Generation > other.Generation
+	}
+	return s.LastSeen.After(other.LastSeen)
 }
 
 // Weights influence load balancing. The default is {Passing:1, Warning:1}.
@@ -113,6 +133,15 @@ type ServiceEntry struct {
 	// architecture, seed indexes must not leak; the agent synthesises its own.
 	CreateIndex uint64
 	ModifyIndex uint64
+}
+
+// ReachableAddress is the address to reach this instance: the service's own
+// address, falling back to its node's. Shared by the Consul HTTP and DNS surfaces.
+func (e ServiceEntry) ReachableAddress() string {
+	if e.Service.Address != "" {
+		return e.Service.Address
+	}
+	return e.Node.Address
 }
 
 // LookupResult is the result of a Lookup: matching entries and the registry

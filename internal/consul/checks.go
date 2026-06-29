@@ -159,7 +159,7 @@ func serviceCheck(e model.ServiceEntry) healthCheck {
 		status = "critical"
 	}
 	return healthCheck{
-		Node: nodeName(e.Node), CheckID: "service:" + e.Service.ID, Name: "Service '" + e.Service.Name + "' check",
+		Node: e.Node.DisplayName(), CheckID: "service:" + e.Service.ID, Name: "Service '" + e.Service.Name + "' check",
 		Status: status, ServiceID: e.Service.ID, ServiceName: e.Service.Name,
 	}
 }

@@ -19,21 +19,19 @@ package bootstrap
 import (
 	"context"
 	"log/slog"
-	"net"
 	"strings"
-	"sync"
-	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
-	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 
 	discoveryv1 "github.com/ks-tool/yellow-pages/proto/discovery/v1"
 
 	"github.com/ks-tool/yellow-pages/internal/clock"
 	"github.com/ks-tool/yellow-pages/internal/config"
+	"github.com/ks-tool/yellow-pages/internal/grpcx"
+	"github.com/ks-tool/yellow-pages/internal/ratelimit"
 )
 
 // metadataToken is the gRPC metadata key carrying the bootstrap token.
@@ -87,11 +85,11 @@ func (s *Service) Register(reg grpc.ServiceRegistrar) {
 // GetConfig returns a sanitized config for the requested role after validating
 // the short-lived token and the seed-join gate. Errors use gRPC status codes.
 func (s *Service) GetConfig(ctx context.Context, req *discoveryv1.GetConfigRequest) (*discoveryv1.GetConfigResponse, error) {
-	client := peerAddr(ctx)
+	client := grpcx.PeerAddr(ctx)
 	// Rate-limit per source HOST, not host:port — the ephemeral source port
 	// changes on every connection, so port-keying would let a reconnecting client
 	// bypass the limit. The full address is still used for the audit log.
-	if !s.rrl.allow(peerHost(ctx)) {
+	if !s.rrl.Allow(grpcx.PeerHost(ctx)) {
 		return nil, status.Error(codes.ResourceExhausted, "bootstrap rate limit exceeded")
 	}
 	if err := ValidateToken(s.signingKey, tokenFromMetadata(ctx), s.clk.Now()); err != nil {
@@ -135,52 +133,4 @@ func tokenFromMetadata(ctx context.Context) string {
 		return strings.TrimSpace(strings.TrimPrefix(v[0], "Bearer "))
 	}
 	return ""
-}
-
-func peerAddr(ctx context.Context) string {
-	if p, ok := peer.FromContext(ctx); ok && p.Addr != nil {
-		return p.Addr.String()
-	}
-	return "unknown"
-}
-
-// peerHost is the source host without the ephemeral port (the rate-limit key).
-func peerHost(ctx context.Context) string {
-	addr := peerAddr(ctx)
-	if host, _, err := net.SplitHostPort(addr); err == nil {
-		return host
-	}
-	return addr
-}
-
-// rateLimiter is a per-client fixed-window limiter (bootstrap DoS guard).
-type rateLimiter struct {
-	limit int
-	clk   clock.Clock
-
-	mu      sync.Mutex
-	counts  map[string]int
-	resetAt time.Time
-}
-
-func newRateLimiter(perSecond int, clk clock.Clock) *rateLimiter {
-	if clk == nil {
-		clk = clock.System()
-	}
-	return &rateLimiter{limit: perSecond, clk: clk, counts: map[string]int{}}
-}
-
-func (r *rateLimiter) allow(client string) bool {
-	if r == nil || r.limit <= 0 {
-		return true
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	now := r.clk.Now()
-	if now.After(r.resetAt) {
-		r.counts = make(map[string]int, len(r.counts))
-		r.resetAt = now.Add(time.Second)
-	}
-	r.counts[client]++
-	return r.counts[client] <= r.limit
 }

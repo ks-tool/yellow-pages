@@ -24,8 +24,9 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
+
+	"github.com/ks-tool/yellow-pages/internal/grpcx"
 )
 
 // UnaryServerInterceptor returns the server-side unary interceptor chain:
@@ -38,7 +39,7 @@ func UnaryServerInterceptor(log *slog.Logger, m Metrics) grpc.UnaryServerInterce
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp any, err error) {
 		start := time.Now()
 		resp, err = recoverUnary(ctx, req, info, handler, log)
-		observe(log, m, SideServer, info.FullMethod, err, time.Since(start), peerAddr(ctx))
+		observe(log, m, SideServer, info.FullMethod, err, time.Since(start), grpcx.PeerAddr(ctx))
 		return resp, err
 	}
 }
@@ -50,7 +51,7 @@ func StreamServerInterceptor(log *slog.Logger, m Metrics) grpc.StreamServerInter
 	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) (err error) {
 		start := time.Now()
 		err = recoverStream(srv, ss, info, handler, log)
-		observe(log, m, SideServer, info.FullMethod, err, time.Since(start), peerAddr(ss.Context()))
+		observe(log, m, SideServer, info.FullMethod, err, time.Since(start), grpcx.PeerAddr(ss.Context()))
 		return err
 	}
 }
@@ -125,13 +126,6 @@ func observe(log *slog.Logger, m Metrics, side, method string, err error, latenc
 		slog.Duration("latency", latency),
 		slog.String("peer", peer),
 	)
-}
-
-func peerAddr(ctx context.Context) string {
-	if p, ok := peer.FromContext(ctx); ok && p.Addr != nil {
-		return p.Addr.String()
-	}
-	return "unknown"
 }
 
 func orDefault(log *slog.Logger) *slog.Logger {

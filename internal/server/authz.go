@@ -22,10 +22,10 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 
 	"github.com/ks-tool/yellow-pages/internal/cred"
+	"github.com/ks-tool/yellow-pages/internal/grpcx"
 	"github.com/ks-tool/yellow-pages/internal/model"
 	discoveryv1 "github.com/ks-tool/yellow-pages/proto/discovery/v1"
 )
@@ -47,7 +47,7 @@ func UnaryAuthzInterceptor(id cred.Identity, authz *cred.Authorizer, log *slog.L
 					"method", info.FullMethod,
 					"node", nodeID,
 					"principal", principalName(p),
-					"peer", peerAddr(ctx),
+					"peer", grpcx.PeerAddr(ctx),
 					"reason", err.Error(),
 				)
 				return nil, status.Error(codes.PermissionDenied, "permission denied")
@@ -71,7 +71,7 @@ func UnaryAuditInterceptor(id cred.Identity, log *slog.Logger) grpc.UnaryServerI
 				slog.String("method", info.FullMethod),
 				slog.String("node", nodeID),
 				slog.String("principal", principalName(id.Principal(ctx))),
-				slog.String("peer", peerAddr(ctx)),
+				slog.String("peer", grpcx.PeerAddr(ctx)),
 				slog.String("code", status.Code(err).String()),
 			)
 		}
@@ -101,11 +101,4 @@ func principalName(p model.Principal) string {
 		return "anonymous"
 	}
 	return p.ID
-}
-
-func peerAddr(ctx context.Context) string {
-	if p, ok := peer.FromContext(ctx); ok && p.Addr != nil {
-		return p.Addr.String()
-	}
-	return "unknown"
 }

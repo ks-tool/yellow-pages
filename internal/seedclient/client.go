@@ -130,10 +130,10 @@ func (c *SeedClient) Close() error {
 // deadline, and aggregates a WriteResult. A hung seed is bounded by its deadline
 // and never blocks the others. Results are collected under a mutex (no shared
 // slice), so go test -race stays clean.
-func (c *SeedClient) fanOut(ctx context.Context, op func(context.Context, discoveryv1.AgentServiceClient) error) WriteResult {
-	var mu sync.Mutex
-	res := WriteResult{Total: len(c.conns), Errors: make(map[string]error)}
-
+// forEachSeed runs fn against every seed concurrently, each with its own
+// per-seed timeout context, and waits for all to finish. It is the one fan-out
+// scaffold behind the write fan-out, Lookup, Dump and Reachable.
+func (c *SeedClient) forEachSeed(ctx context.Context, fn func(cctx context.Context, sc seedConn)) {
 	var wg sync.WaitGroup
 	for _, sc := range c.conns {
 		wg.Add(1)
@@ -141,18 +141,26 @@ func (c *SeedClient) fanOut(ctx context.Context, op func(context.Context, discov
 			defer wg.Done()
 			cctx, cancel := context.WithTimeout(ctx, c.seedTimeout)
 			defer cancel()
-
-			err := op(cctx, sc.agent)
-			mu.Lock()
-			if err != nil {
-				res.Errors[sc.addr] = err
-			} else {
-				res.Succeeded++
-			}
-			mu.Unlock()
+			fn(cctx, sc)
 		}(sc)
 	}
 	wg.Wait()
+}
+
+func (c *SeedClient) fanOut(ctx context.Context, op func(context.Context, discoveryv1.AgentServiceClient) error) WriteResult {
+	var mu sync.Mutex
+	res := WriteResult{Total: len(c.conns), Errors: make(map[string]error)}
+
+	c.forEachSeed(ctx, func(cctx context.Context, sc seedConn) {
+		err := op(cctx, sc.agent)
+		mu.Lock()
+		if err != nil {
+			res.Errors[sc.addr] = err
+		} else {
+			res.Succeeded++
+		}
+		mu.Unlock()
+	})
 	c.prop.ObserveFanout(res.Succeeded, res.Total)
 	return res
 }
@@ -205,32 +213,23 @@ func (c *SeedClient) Lookup(ctx context.Context, q model.Query) (model.LookupRes
 		maxIndex uint64
 		okCount  int
 		errs     []error
-		wg       sync.WaitGroup
 	)
-	for _, sc := range c.conns {
-		wg.Add(1)
-		go func(sc seedConn) {
-			defer wg.Done()
-			cctx, cancel := context.WithTimeout(ctx, c.seedTimeout)
-			defer cancel()
-
-			resp, err := sc.agent.Lookup(cctx, req)
-			mu.Lock()
-			defer mu.Unlock()
-			if err != nil {
-				errs = append(errs, fmt.Errorf("%s: %w", sc.addr, err))
-				return
-			}
-			okCount++
-			lr := protoconv.LookupResultFromProto(resp)
-			all = append(all, lr.Entries...)
-			counts = append(counts, len(lr.Entries))
-			if lr.Index > maxIndex {
-				maxIndex = lr.Index
-			}
-		}(sc)
-	}
-	wg.Wait()
+	c.forEachSeed(ctx, func(cctx context.Context, sc seedConn) {
+		resp, err := sc.agent.Lookup(cctx, req)
+		mu.Lock()
+		defer mu.Unlock()
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", sc.addr, err))
+			return
+		}
+		okCount++
+		lr := protoconv.LookupResultFromProto(resp)
+		all = append(all, lr.Entries...)
+		counts = append(counts, len(lr.Entries))
+		if lr.Index > maxIndex {
+			maxIndex = lr.Index
+		}
+	})
 
 	c.prop.ObserveFanout(okCount, len(c.conns))
 	if okCount == 0 {
@@ -304,25 +303,17 @@ func (c *SeedClient) Dump(ctx context.Context, q model.Query) map[string][]model
 	var (
 		mu  sync.Mutex
 		out = make(map[string][]model.ServiceEntry, len(c.conns))
-		wg  sync.WaitGroup
 	)
-	for _, sc := range c.conns {
-		wg.Add(1)
-		go func(sc seedConn) {
-			defer wg.Done()
-			cctx, cancel := context.WithTimeout(ctx, c.seedTimeout)
-			defer cancel()
-			resp, err := sc.agent.Lookup(cctx, req)
-			mu.Lock()
-			if err == nil {
-				out[sc.addr] = protoconv.LookupResultFromProto(resp).Entries
-			} else {
-				out[sc.addr] = nil
-			}
-			mu.Unlock()
-		}(sc)
-	}
-	wg.Wait()
+	c.forEachSeed(ctx, func(cctx context.Context, sc seedConn) {
+		resp, err := sc.agent.Lookup(cctx, req)
+		mu.Lock()
+		if err == nil {
+			out[sc.addr] = protoconv.LookupResultFromProto(resp).Entries
+		} else {
+			out[sc.addr] = nil
+		}
+		mu.Unlock()
+	})
 	return out
 }
 
@@ -331,23 +322,14 @@ func (c *SeedClient) Reachable(ctx context.Context) int {
 	var (
 		mu    sync.Mutex
 		count int
-		wg    sync.WaitGroup
 	)
-	for _, sc := range c.conns {
-		wg.Add(1)
-		go func(sc seedConn) {
-			defer wg.Done()
-			cctx, cancel := context.WithTimeout(ctx, c.seedTimeout)
-			defer cancel()
-
-			resp, err := sc.health.Check(cctx, &healthpb.HealthCheckRequest{})
-			if err == nil && resp.GetStatus() == healthpb.HealthCheckResponse_SERVING {
-				mu.Lock()
-				count++
-				mu.Unlock()
-			}
-		}(sc)
-	}
-	wg.Wait()
+	c.forEachSeed(ctx, func(cctx context.Context, sc seedConn) {
+		resp, err := sc.health.Check(cctx, &healthpb.HealthCheckRequest{})
+		if err == nil && resp.GetStatus() == healthpb.HealthCheckResponse_SERVING {
+			mu.Lock()
+			count++
+			mu.Unlock()
+		}
+	})
 	return count
 }

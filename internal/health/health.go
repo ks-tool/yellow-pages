@@ -86,7 +86,8 @@ func MergeLWW(in []model.ServiceEntry) []model.ServiceEntry {
 	winners := make(map[key]model.ServiceEntry, len(in))
 	for _, e := range in {
 		k := key{e.Node.ID, e.Service.ID}
-		if cur, ok := winners[k]; ok && !worseThan(cur, e) {
+		// Keep the current winner unless this entry strictly beats it (LWW).
+		if cur, ok := winners[k]; ok && !e.Service.WinsLWW(cur.Service) {
 			continue
 		}
 		winners[k] = e
@@ -103,13 +104,4 @@ func MergeLWW(in []model.ServiceEntry) []model.ServiceEntry {
 		return out[i].Service.ID < out[j].Service.ID
 	})
 	return out
-}
-
-// worseThan reports whether a should lose to b under the LWW key: lower
-// Generation, or equal Generation with an earlier server-stamped LastSeen.
-func worseThan(a, b model.ServiceEntry) bool {
-	if a.Service.Generation != b.Service.Generation {
-		return a.Service.Generation < b.Service.Generation
-	}
-	return a.Service.LastSeen.Before(b.Service.LastSeen)
 }

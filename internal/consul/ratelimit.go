@@ -19,39 +19,10 @@ package consul
 import (
 	"net"
 	"net/http"
-	"sync"
-	"time"
 )
 
-// rateLimiter is a per-client fixed-window request limiter for the Consul HTTP
-// surface (read + write DoS guard). A zero limit disables it.
-type rateLimiter struct {
-	limit int
-
-	mu      sync.Mutex
-	counts  map[string]int
-	resetAt time.Time
-}
-
-func newRateLimiter(perSecond int) *rateLimiter {
-	return &rateLimiter{limit: perSecond, counts: map[string]int{}}
-}
-
-func (r *rateLimiter) allow(client string) bool {
-	if r == nil || r.limit <= 0 {
-		return true
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	now := time.Now()
-	if now.After(r.resetAt) {
-		r.counts = make(map[string]int, len(r.counts))
-		r.resetAt = now.Add(time.Second)
-	}
-	r.counts[client]++
-	return r.counts[client] <= r.limit
-}
-
+// remoteIP is the client's source host (without port) — the rate-limit key for
+// the Consul HTTP surface. The limiter itself is internal/ratelimit.
 func remoteIP(r *http.Request) string {
 	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
 		return host

@@ -26,10 +26,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ks-tool/yellow-pages/internal/clock"
 	"github.com/ks-tool/yellow-pages/internal/cred"
 	"github.com/ks-tool/yellow-pages/internal/health"
 	"github.com/ks-tool/yellow-pages/internal/model"
 	"github.com/ks-tool/yellow-pages/internal/observability"
+	"github.com/ks-tool/yellow-pages/internal/ratelimit"
 	"github.com/ks-tool/yellow-pages/internal/watch"
 )
 
@@ -94,6 +96,8 @@ type Options struct {
 	// RateLimit caps requests-per-second per client (0 = unlimited; read+write
 	// DoS guard, 429 on exceed).
 	RateLimit int
+	// Clock is the time source for the rate-limit window (defaults to System).
+	Clock clock.Clock
 	// Prop records the surface/waiter metrics (optional).
 	Prop *observability.Propagation
 	// Dumper backs the registry-dump admin endpoint (optional).
@@ -113,7 +117,7 @@ type Handler struct {
 	prop     *observability.Propagation
 	dumper   Dumper
 	members  func(ctx context.Context) any
-	rrl      *rateLimiter
+	rrl      *ratelimit.Limiter
 	waiters  chan struct{}
 	log      *slog.Logger
 }
@@ -135,7 +139,7 @@ func NewHandler(opts Options) http.Handler {
 		prop:     opts.Prop,
 		dumper:   opts.Dumper,
 		members:  opts.Members,
-		rrl:      newRateLimiter(opts.RateLimit),
+		rrl:      ratelimit.New(opts.RateLimit, opts.Clock),
 		waiters:  make(chan struct{}, opts.MaxWaiters),
 		log:      opts.Log,
 	}
@@ -173,7 +177,7 @@ func NewHandler(opts Options) http.Handler {
 	// Count every request to this surface (low-cardinality label) and rate-limit.
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h.prop.CountRequest("consul_http")
-		if !h.rrl.allow(remoteIP(r)) {
+		if !h.rrl.Allow(remoteIP(r)) {
 			http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
 			return
 		}
@@ -456,10 +460,10 @@ func (h *Handler) fail(w http.ResponseWriter, err error) {
 
 func (h *Handler) toCatalog(e model.ServiceEntry) catalogService {
 	return catalogService{
-		ID: e.Node.ID, Node: nodeName(e.Node), Address: e.Node.Address, Datacenter: e.Node.Datacenter,
+		ID: e.Node.ID, Node: e.Node.DisplayName(), Address: e.Node.Address, Datacenter: e.Node.Datacenter,
 		NodeMeta: e.Node.Meta, TaggedAddresses: e.Node.TaggedAddresses,
 		ServiceID: e.Service.ID, ServiceName: e.Service.Name,
-		ServiceAddress: serviceAddr(e), ServicePort: int(e.Service.Port),
+		ServiceAddress: e.ReachableAddress(), ServicePort: int(e.Service.Port),
 		ServiceTags: orEmpty(e.Service.Tags), ServiceMeta: e.Service.Meta,
 		ServiceWeights: modelWeights(e.Service.Weights),
 		CreateIndex:    e.CreateIndex, ModifyIndex: e.ModifyIndex,
@@ -471,7 +475,7 @@ func (h *Handler) toHealth(e model.ServiceEntry) healthServiceEntry {
 		Node: toNode(e.Node),
 		Service: healthService{
 			ID: e.Service.ID, Service: e.Service.Name, Tags: orEmpty(e.Service.Tags),
-			Address: serviceAddr(e), Meta: e.Service.Meta, Port: int(e.Service.Port),
+			Address: e.ReachableAddress(), Meta: e.Service.Meta, Port: int(e.Service.Port),
 			Weights: modelWeights(e.Service.Weights),
 		},
 		Checks: synthChecks(e),
@@ -484,15 +488,15 @@ func synthChecks(e model.ServiceEntry) []healthCheck {
 		nodeStatus = "critical"
 	}
 	checks := []healthCheck{
-		{Node: nodeName(e.Node), CheckID: "serfHealth", Name: "Serf Health Status", Status: nodeStatus},
+		{Node: e.Node.DisplayName(), CheckID: "serfHealth", Name: "Serf Health Status", Status: nodeStatus},
 		{
-			Node: nodeName(e.Node), CheckID: "service:" + e.Service.ID, Name: "Service '" + e.Service.Name + "' check",
+			Node: e.Node.DisplayName(), CheckID: "service:" + e.Service.ID, Name: "Service '" + e.Service.Name + "' check",
 			Status: healthStatus(e.Health), ServiceID: e.Service.ID, ServiceName: e.Service.Name,
 		},
 	}
 	if e.Maintenance {
 		checks = append(checks, healthCheck{
-			Node: nodeName(e.Node), CheckID: "_service_maintenance:" + e.Service.ID, Name: "Service Maintenance Mode",
+			Node: e.Node.DisplayName(), CheckID: "_service_maintenance:" + e.Service.ID, Name: "Service Maintenance Mode",
 			Status: "critical", ServiceID: e.Service.ID, ServiceName: e.Service.Name,
 		})
 	}
@@ -563,21 +567,7 @@ func tokenFromHTTP(r *http.Request) string {
 // --- model -> consul render helpers ---
 
 func toNode(n model.Node) node {
-	return node{ID: n.ID, Node: nodeName(n), Address: n.Address, Datacenter: n.Datacenter, Meta: n.Meta, TaggedAddresses: n.TaggedAddresses}
-}
-
-func nodeName(n model.Node) string {
-	if n.Name != "" {
-		return n.Name
-	}
-	return n.ID
-}
-
-func serviceAddr(e model.ServiceEntry) string {
-	if e.Service.Address != "" {
-		return e.Service.Address
-	}
-	return e.Node.Address
+	return node{ID: n.ID, Node: n.DisplayName(), Address: n.Address, Datacenter: n.Datacenter, Meta: n.Meta, TaggedAddresses: n.TaggedAddresses}
 }
 
 func healthStatus(s model.HealthState) string {

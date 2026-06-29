@@ -309,7 +309,7 @@ func (m *Memory) Merge(entries []model.ServiceEntry) int {
 			m.indexName(e.Node.ID, def)
 			events = append(events, m.putEvent(n.meta, svc))
 			applied++
-		case lwwWins(def, svc.def):
+		case def.WinsLWW(svc.def):
 			oldName := svc.def.Name
 			svc.def = def
 			svc.modifyIndex = m.next()
@@ -325,15 +325,6 @@ func (m *Memory) Merge(entries []model.ServiceEntry) int {
 	m.mu.Unlock()
 	m.emit(events)
 	return applied
-}
-
-// lwwWins reports whether incoming strictly beats existing by (Generation, then
-// LastSeen) — the same order as health.MergeLWW.
-func lwwWins(incoming, existing model.ServiceInstance) bool {
-	if incoming.Generation != existing.Generation {
-		return incoming.Generation > existing.Generation
-	}
-	return incoming.LastSeen.After(existing.LastSeen)
 }
 
 // changed reports whether the stored definition differs from the incoming one in

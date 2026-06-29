@@ -185,9 +185,7 @@ func changed(prev, cur *cacheEntry) bool {
 	}
 	for i := range cur.merged {
 		a, b := prev.merged[i], cur.merged[i]
-		if a.Node.ID != b.Node.ID || a.Service.ID != b.Service.ID ||
-			a.Service.Address != b.Service.Address || a.Service.Port != b.Service.Port ||
-			a.Service.Generation != b.Service.Generation || a.Health != b.Health {
+		if a.Node.ID != b.Node.ID || a.Service.ID != b.Service.ID || endpointChanged(a, b) {
 			return true
 		}
 	}

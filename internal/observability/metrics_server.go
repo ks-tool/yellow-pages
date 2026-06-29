@@ -17,70 +17,20 @@
 package observability
 
 import (
-	"context"
-	"errors"
 	"log/slog"
-	"net"
 	"net/http"
-	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+
+	"github.com/ks-tool/yellow-pages/internal/httpcomp"
 )
 
-// MetricsServer is an app.Component that serves the Prometheus registry over
-// HTTP at /metrics. It uses the standard library net/http (no framework) to keep
-// the footprint low.
-type MetricsServer struct {
-	addr string
-	log  *slog.Logger
-	srv  *http.Server
-}
-
 // NewMetricsServer builds the /metrics HTTP component for reg, listening on addr.
-func NewMetricsServer(addr string, reg *prometheus.Registry, log *slog.Logger) *MetricsServer {
+// It serves the Prometheus registry over the standard library net/http (no
+// framework) through the shared httpcomp wrapper.
+func NewMetricsServer(addr string, reg *prometheus.Registry, log *slog.Logger) *httpcomp.Component {
 	mux := http.NewServeMux()
 	mux.Handle("GET /metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
-	return &MetricsServer{
-		addr: addr,
-		log:  orDefault(log),
-		srv: &http.Server{
-			Addr:              addr,
-			Handler:           mux,
-			ReadHeaderTimeout: 5 * time.Second,
-		},
-	}
-}
-
-// Name identifies the component.
-func (s *MetricsServer) Name() string { return "metrics-http" }
-
-// Start serves /metrics until ctx is cancelled.
-func (s *MetricsServer) Start(ctx context.Context) error {
-	lis, err := net.Listen("tcp", s.addr)
-	if err != nil {
-		return err
-	}
-	s.log.Info("metrics endpoint serving", "addr", lis.Addr().String(), "path", "/metrics")
-
-	errCh := make(chan error, 1)
-	go func() {
-		if serveErr := s.srv.Serve(lis); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
-			errCh <- serveErr
-			return
-		}
-		errCh <- nil
-	}()
-
-	select {
-	case <-ctx.Done():
-		return nil
-	case err := <-errCh:
-		return err
-	}
-}
-
-// Stop gracefully shuts the HTTP server down within ctx's deadline.
-func (s *MetricsServer) Stop(ctx context.Context) error {
-	return s.srv.Shutdown(ctx)
+	return httpcomp.New("metrics-http", addr, mux, orDefault(log))
 }
