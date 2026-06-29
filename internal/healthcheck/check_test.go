@@ -51,13 +51,15 @@ func TestProbeTCP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	addr := ln.Addr().String()
-	if err := probe(context.Background(), Definition{Kind: KindTCP, Target: addr}, false); err != nil {
+	defer func() { _ = ln.Close() }()
+	if err := probe(context.Background(), Definition{Kind: KindTCP, Target: ln.Addr().String()}, false); err != nil {
 		t.Errorf("open port should pass: %v", err)
 	}
-	_ = ln.Close()
-	if err := probe(context.Background(), Definition{Kind: KindTCP, Target: addr, Timeout: 200 * time.Millisecond}, false); err == nil {
-		t.Error("closed port should fail")
+	// Use a privileged, never-ephemeral port for the failure case: it stays
+	// refused and no parallel test (here or in another package on the same
+	// 127.0.0.1) can grab it — closing our own listener would race port reuse.
+	if err := probe(context.Background(), Definition{Kind: KindTCP, Target: "127.0.0.1:1", Timeout: 300 * time.Millisecond}, false); err == nil {
+		t.Error("unreachable port should fail")
 	}
 }
 

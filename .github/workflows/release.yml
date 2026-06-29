@@ -17,19 +17,21 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0 # buf breaking needs history
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.26.4"
       # `make verify` calls golangci-lint and buf directly (govulncheck is a pinned
       # `go tool`), so both must be on PATH — install them at the versions the gate
       # is validated against.
-      - uses: bufbuild/buf-setup-action@v1
-        with:
-          version: "1.71.0"
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install buf
+        run: |
+          BIN="$HOME/.local/bin"; mkdir -p "$BIN"
+          curl -sSfL "https://github.com/bufbuild/buf/releases/download/v1.71.0/buf-$(uname -s)-$(uname -m)" -o "$BIN/buf"
+          chmod +x "$BIN/buf"
+          echo "$BIN" >> "$GITHUB_PATH"
       - name: Install golangci-lint
         run: |
           curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh \
@@ -42,11 +44,16 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        goos: [linux, darwin]
-        goarch: [amd64, arm64]
+        goos:
+          - linux
+          - darwin
+          - windows
+        goarch:
+          - amd64
+          - arm64
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.26.4"
       - name: Build
@@ -56,6 +63,7 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
         run: |
           out="yp_${GITHUB_REF_NAME}_${GOOS}_${GOARCH}"
+          if [ "$GOOS" = "windows" ]; then out="${out}.exe"; fi
           go build -trimpath -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" -o "$out" ./cmd/yp
           sha256sum "$out" > "$out.sha256"
       - name: SBOM (syft)
@@ -67,7 +75,11 @@ jobs:
           # Don't attach to the release here — it doesn't exist yet (the `release`
           # job creates it later and attaches the artifacts). Avoids a 404.
           upload-release-assets: "false"
-      - uses: actions/upload-artifact@v4
+          # Don't auto-upload a separate workflow artifact either: the SBOM file is
+          # already bundled into the yp-* artifact by the upload-artifact step below,
+          # and the action's own artifact trips download-artifact@v4 in `release`.
+          upload-artifact: "false"
+      - uses: actions/upload-artifact@v7
         with:
           name: yp-${{ matrix.goos }}-${{ matrix.goarch }}
           path: |
@@ -78,17 +90,17 @@ jobs:
     needs: verify
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
+      - uses: actions/checkout@v5
+      - uses: docker/setup-buildx-action@v4
       - uses: sigstore/cosign-installer@v3
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Build and push multi-arch image
         id: build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64,linux/arm64
@@ -110,9 +122,10 @@ jobs:
     needs: [binaries, image]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v8
         with:
+          pattern: yp-* # only the binary/checksum/SBOM artifacts from `binaries`
           path: dist
           merge-multiple: true
       - uses: sigstore/cosign-installer@v3
@@ -122,7 +135,7 @@ jobs:
           cat *.sha256 > SHA256SUMS
           cosign sign-blob --yes --output-signature SHA256SUMS.sig --output-certificate SHA256SUMS.pem SHA256SUMS
       - name: GitHub release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           generate_release_notes: true # changelog
           files: dist/*

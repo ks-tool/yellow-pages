@@ -48,11 +48,11 @@ func TestMonitorGatesOnCheck(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	addr := ln.Addr().String()
+	defer func() { _ = ln.Close() }()
 
 	k := chanKeeper{calls: make(chan string, 16)}
 	m := discardMonitor(t, k)
-	m.Set("web", []Definition{{Kind: KindTCP, Target: addr, Interval: 20 * time.Millisecond}})
+	m.Set("web", []Definition{{Kind: KindTCP, Target: ln.Addr().String(), Interval: 20 * time.Millisecond}})
 
 	if !m.Active("web") {
 		t.Fatal("service with a check should be Active (excluded from blanket renew)")
@@ -68,8 +68,12 @@ func TestMonitorGatesOnCheck(t *testing.T) {
 		t.Fatal("no keep-alive while the check passes")
 	}
 
-	// Close the port -> the check fails -> no further keep-alive (lease lapses).
-	_ = ln.Close()
+	// Repoint the check at an unreachable port -> it fails -> no further keep-alive.
+	// 127.0.0.1:1 stays refused and can't be hijacked by a parallel test, unlike a
+	// freed ephemeral port. Settle first so a trailing keep-alive from the old
+	// (passing) check lands and gets drained before we assert quiet.
+	m.Set("web", []Definition{{Kind: KindTCP, Target: "127.0.0.1:1", Timeout: 100 * time.Millisecond, Interval: 20 * time.Millisecond}})
+	time.Sleep(100 * time.Millisecond)
 	for len(k.calls) > 0 {
 		<-k.calls
 	}

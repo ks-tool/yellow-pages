@@ -17,8 +17,8 @@ jobs:
     name: build / vet / test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.26.4"
           check-latest: false
@@ -37,21 +37,28 @@ jobs:
     name: golangci-lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.26.4"
           check-latest: false
-      - uses: golangci/golangci-lint-action@v7
-        with:
-          version: latest
+      # Install golangci-lint pinned and run `make lint` (same as the release
+      # `verify` job). Avoids golangci-lint-action@v7 (deprecated Node 20) and the
+      # non-deterministic `version: latest`.
+      - name: Install golangci-lint
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh \
+            | sh -s -- -b "$(go env GOPATH)/bin" v2.11.3
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - name: Lint
+        run: make lint
 
   govulncheck:
     name: govulncheck
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.26.4"
           check-latest: false
@@ -62,15 +69,17 @@ jobs:
     name: buf lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      # Pin buf and run `buf lint` explicitly (same as `make buf-lint`). The
-      # composite buf-action@v1 also annotates/comments on pull_request events,
-      # which needs pull-requests:write and fails under this job's read-only token;
-      # an explicit lint has no such side effects.
-      - uses: bufbuild/buf-setup-action@v1
-        with:
-          version: "1.71.0"
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/checkout@v5
+      # Install buf and run `buf lint` explicitly (same as `make buf-lint`). We
+      # avoid the composite buf-action@v1 (annotates/comments on PRs, needs
+      # pull-requests:write) and buf-setup-action (no Node 24 release yet) — a
+      # pinned binary keeps the job side-effect-free and off the deprecated Node 20.
+      - name: Install buf
+        run: |
+          BIN="$HOME/.local/bin"; mkdir -p "$BIN"
+          curl -sSfL "https://github.com/bufbuild/buf/releases/download/v1.71.0/buf-$(uname -s)-$(uname -m)" -o "$BIN/buf"
+          chmod +x "$BIN/buf"
+          echo "$BIN" >> "$GITHUB_PATH"
       # Append-only is enforced locally by `make buf-breaking` (baseline = branch
       # HEAD). The CI breaking-gate stays off until the greenfield branch lands on
       # main: main still carries the legacy proto/service_discovery.proto, so a
@@ -83,8 +92,8 @@ jobs:
     name: e2e (real Consul)
     runs-on: ubuntu-latest # ubuntu runners ship Docker for testcontainers
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.26.4"
           check-latest: false
