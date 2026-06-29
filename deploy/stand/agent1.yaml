@@ -1,0 +1,16 @@
+# Test-stand agent. Hosts services, fans registrations out to every seed, and
+# serves local Consul HTTP/DNS reads (fan-out + merge). Reaches seeds by their
+# compose service names.
+role: agent
+node_name: agent1
+datacenter: dc1
+cluster:
+  name: demo
+  seeds:
+    - seed1:9900
+    - seed2:9900
+listeners:
+  grpc: { address: 0.0.0.0, port: 9900 }
+  consul_http: { enabled: true, address: 0.0.0.0, port: 8500 }
+  dns: { enabled: true, address: 0.0.0.0, port: 8600 }
+  metrics: { enabled: true, address: 0.0.0.0, port: 9901 }

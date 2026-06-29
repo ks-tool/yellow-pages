@@ -1,0 +1,80 @@
+# yellow-pages test stand: a 2-seed / 2-agent cluster on one bridge network.
+#
+#   docker compose up --build              # start seeds + agents
+#   docker compose --profile monitoring up -d --build   # + Prometheus on :9090
+#
+# Try it (register on agent1, discover on agent2 — fan-out + cross-seed merge):
+#   curl -XPUT localhost:8511/v1/agent/service/register \
+#        -d '{"Name":"web","Port":8080,"Address":"10.1.2.3"}'
+#   curl -s localhost:8512/v1/health/service/web
+#   dig @127.0.0.1 -p 8612 web.service.consul +short
+#   open http://localhost:9911/metrics            # agent1 SLIs
+#
+# Host port map (container ports are the yp defaults 8500/8600/9901):
+#   seed1   Consul HTTP :8501   metrics :9901
+#   seed2   Consul HTTP :8502   metrics :9902
+#   agent1  Consul HTTP :8511   DNS :8611   metrics :9911
+#   agent2  Consul HTTP :8512   DNS :8612   metrics :9912
+name: yellow-pages
+
+x-yp: &yp
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: yellow-pages:stand
+  restart: unless-stopped
+  command: ["--config", "/etc/yp/config.yaml", "--log-format", "text"]
+  networks: [yp]
+
+services:
+  seed1:
+    <<: *yp
+    container_name: yp-seed1
+    volumes: ["./deploy/stand/seed1.yaml:/etc/yp/config.yaml:ro"]
+    ports:
+      - "8501:8500" # Consul HTTP
+      - "9901:9901" # Prometheus metrics
+
+  seed2:
+    <<: *yp
+    container_name: yp-seed2
+    volumes: ["./deploy/stand/seed2.yaml:/etc/yp/config.yaml:ro"]
+    ports:
+      - "8502:8500"
+      - "9902:9901"
+
+  agent1:
+    <<: *yp
+    container_name: yp-agent1
+    depends_on: [seed1, seed2]
+    volumes: ["./deploy/stand/agent1.yaml:/etc/yp/config.yaml:ro"]
+    ports:
+      - "8511:8500" # Consul HTTP
+      - "8611:8600/udp" # Consul DNS
+      - "8611:8600/tcp"
+      - "9911:9901" # metrics
+
+  agent2:
+    <<: *yp
+    container_name: yp-agent2
+    depends_on: [seed1, seed2]
+    volumes: ["./deploy/stand/agent2.yaml:/etc/yp/config.yaml:ro"]
+    ports:
+      - "8512:8500"
+      - "8612:8600/udp"
+      - "8612:8600/tcp"
+      - "9912:9901"
+
+  # Optional: Prometheus scraping all four nodes. Enable with `--profile monitoring`.
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: yp-prometheus
+    profiles: [monitoring]
+    restart: unless-stopped
+    volumes: ["./deploy/stand/prometheus.yml:/etc/prometheus/prometheus.yml:ro"]
+    ports: ["9090:9090"]
+    networks: [yp]
+
+networks:
+  yp:
+    driver: bridge
