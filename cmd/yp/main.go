@@ -32,7 +32,7 @@ func main() {
 	// The command silences cobra's own error printing so we render a single,
 	// actionable line here (validation errors may be several joined messages).
 	if err := newRootCmd().Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, "yp:", err)
+		_, _ = fmt.Fprintln(os.Stderr, "yp:", err)
 		os.Exit(1)
 	}
 }
