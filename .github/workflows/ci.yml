@@ -63,17 +63,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: bufbuild/buf-action@v1
+      # Pin buf and run `buf lint` explicitly (same as `make buf-lint`). The
+      # composite buf-action@v1 also annotates/comments on pull_request events,
+      # which needs pull-requests:write and fails under this job's read-only token;
+      # an explicit lint has no such side effects.
+      - uses: bufbuild/buf-setup-action@v1
         with:
-          # Append-only is enforced locally by `make buf-breaking` (baseline = branch
-          # HEAD). The CI breaking-gate stays off until the greenfield branch lands on
-          # main: main still carries the legacy proto/service_discovery.proto, so a
-          # main baseline would falsely flag its intentional removal. Flip to
-          # `breaking: true` with a main baseline once that merge happens.
-          lint: true
-          breaking: false
-          format: false
-          push: false
+          version: "1.71.0"
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+      # Append-only is enforced locally by `make buf-breaking` (baseline = branch
+      # HEAD). The CI breaking-gate stays off until the greenfield branch lands on
+      # main: main still carries the legacy proto/service_discovery.proto, so a
+      # main baseline would falsely flag its intentional removal. Re-enable
+      # `buf breaking --against` with a main baseline once that merge happens.
+      - name: Lint proto contract
+        run: buf lint
 
   e2e:
     name: e2e (real Consul)

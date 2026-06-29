@@ -86,6 +86,11 @@ func (p *Plugin) Seeds(ctx context.Context) ([]string, error) {
 	// reach it through the environment and are never interpreted by a shell.
 	cmd := exec.CommandContext(ctx, p.cfg.Path) //nolint:gosec // validated absolute path, no shell
 	cmd.Env = append(os.Environ(), p.cfg.OptionsEnv+"="+string(optionsYAML))
+	// On timeout, CommandContext SIGKILLs the direct child only; a grandchild
+	// (e.g. a shell's `sleep`) can keep the stdout pipe open and block Wait for the
+	// full child runtime. WaitDelay bounds that: once ctx is done, os/exec waits
+	// this long for I/O, then force-closes the pipes and reaps. Keeps Seeds prompt.
+	cmd.WaitDelay = time.Second
 
 	out, err := cmd.Output()
 	if err != nil {
