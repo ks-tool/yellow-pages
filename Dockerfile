@@ -3,13 +3,17 @@
 # Minimal scratch image for the yp binary (M16). Multi-arch via buildx
 # (linux/amd64, linux/arm64); the version is injected at link time.
 
-FROM --platform=$BUILDPLATFORM golang:1.26.4 AS build
+FROM golang:1.26.4 AS build
 ARG TARGETOS
 ARG TARGETARCH
 ARG VERSION=dev
 WORKDIR /src
+
+RUN apt-get update && apt-get install ca-certificates
+
 COPY go.mod go.sum ./
 RUN go mod download
+
 COPY . .
 ENV CGO_ENABLED=0 GOFLAGS=-mod=readonly
 RUN GOOS=$TARGETOS GOARCH=$TARGETARCH \
