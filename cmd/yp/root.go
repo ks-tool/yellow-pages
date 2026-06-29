@@ -25,7 +25,10 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"google.golang.org/grpc"
+
 	"github.com/ks-tool/yellow-pages/internal/app"
+	"github.com/ks-tool/yellow-pages/internal/bootstrap"
 	"github.com/ks-tool/yellow-pages/internal/clock"
 	"github.com/ks-tool/yellow-pages/internal/config"
 	"github.com/ks-tool/yellow-pages/internal/consul"
@@ -129,6 +132,7 @@ func newRootCmd() *cobra.Command {
 	}
 
 	cmd.AddCommand(newImportCmd())
+	cmd.AddCommand(newBootstrapCmd())
 
 	cmd.SetVersionTemplate("{{.Version}}\n")
 	flags := cmd.Flags()
@@ -238,6 +242,13 @@ func buildComponents(cfg *config.Config, metrics *observability.Prometheus, clk 
 		var membersFn func(ctx context.Context) any
 		gateReadiness := cfg.Membership.Enabled && len(cfg.Membership.Peers) > 0
 
+		// Bootstrap (config distribution): registered on the SAME gRPC server as
+		// AgentService — no extra listener — and only on a seed when enabled.
+		bootRegister, err := bootstrapRegistrar(cfg, clk, logger)
+		if err != nil {
+			return nil, err
+		}
+
 		seedServer := server.NewComponent(server.Options{
 			Addr:          cfg.Listeners.GRPC.Addr(),
 			Service:       server.New(st, logger).SetWatcher(watcher),
@@ -246,6 +257,7 @@ func buildComponents(cfg *config.Config, metrics *observability.Prometheus, clk 
 			Identity:      sec.identity,
 			Authz:         sec.authz,
 			StartNotReady: gateReadiness,
+			RegisterExtra: bootRegister,
 			Log:           logger,
 		})
 		components = append(components,
@@ -421,6 +433,48 @@ func consulComponent(cfg *config.Config, reg consul.Registry, node model.Node, s
 		Log:       logger,
 	})
 	return consul.NewComponent(cfg.Listeners.ConsulHTTP.Addr(), handler, logger)
+}
+
+// bootstrapRegistrar builds the seed's BootstrapService and returns a registrar
+// for the shared gRPC server, or nil when bootstrap is disabled. Bootstrap rides
+// the existing gRPC server (and its TLS/mTLS), so it adds no listener; it only
+// warns when that server is insecure (the token would travel in clear).
+func bootstrapRegistrar(cfg *config.Config, clk clock.Clock, logger *slog.Logger) (func(grpc.ServiceRegistrar), error) {
+	if !cfg.Bootstrap.Enabled {
+		return nil, nil
+	}
+	key, err := bootstrap.ResolveSigningKey(cfg.Bootstrap.SigningKey, cfg.Bootstrap.SigningKeyFile)
+	if err != nil {
+		return nil, fmt.Errorf("bootstrap: load signing key: %w", err)
+	}
+	if len(key) == 0 {
+		return nil, fmt.Errorf("bootstrap: empty signing key")
+	}
+
+	seeds := cfg.Bootstrap.AdvertiseSeeds
+	if len(seeds) == 0 {
+		seeds = cfg.Cluster.Seeds
+	}
+
+	if !cfg.TLS.Enabled {
+		logger.Warn("bootstrap enabled on an INSECURE gRPC server — minted tokens travel in clear; " +
+			"enable tls (ideally mutual_tls) and restrict listeners.grpc.address")
+	}
+	if cfg.Bootstrap.AllowSeedJoin {
+		logger.Warn("bootstrap allow_seed_join is ON — callers may generate SEED configs; " +
+			"ensure new seeds still require valid credentials and membership")
+	}
+
+	svc := bootstrap.NewService(bootstrap.Options{
+		Config:        cfg,
+		SigningKey:    key,
+		AllowSeedJoin: cfg.Bootstrap.AllowSeedJoin,
+		Seeds:         seeds,
+		RateLimit:     cfg.Bootstrap.RateLimit,
+		Clock:         clk,
+		Log:           logger,
+	})
+	return svc.Register, nil
 }
 
 // federatedDCs lists the configured remote datacenter names (M17), or nil when

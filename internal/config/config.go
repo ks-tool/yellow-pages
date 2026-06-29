@@ -97,6 +97,41 @@ type Config struct {
 	Federation Federation `yaml:"federation"`
 	// Membership configures seed snapshot-on-join + anti-entropy (M18, v1.x; off).
 	Membership Membership `yaml:"membership"`
+	// Bootstrap is the seed-side policy for the config-bootstrap endpoint.
+	Bootstrap Bootstrap `yaml:"bootstrap"`
+}
+
+// Bootstrap is the seed-side policy for serving generated agent/seed configs to
+// joining nodes (so configs can be refreshed centrally without Ansible/Chef).
+// The BootstrapService RPC runs on the existing gRPC server (no extra listener)
+// and is served only by a seed. It is SENSITIVE — a config-distribution channel
+// — so it is off by default, the served config is sanitized (never carries TLS
+// keys or ACL tokens), every request needs a token, and joining as a SEED is
+// separately gated. See docs/bootstrap.md for the threat model and controls.
+type Bootstrap struct {
+	// Enabled registers the BootstrapService on the seed's gRPC server. Default
+	// false (no config bootstrap).
+	Enabled bool `yaml:"enabled"`
+	// SigningKey is the HMAC secret used to sign and verify short-lived bootstrap
+	// tokens. It NEVER travels on the wire (only minted tokens do). Prefer
+	// SigningKeyFile so the secret is not inline in YAML. One of the two is
+	// REQUIRED when bootstrap is enabled. Generate e.g. `openssl rand -base64 48`.
+	SigningKey string `yaml:"signing_key"`
+	// SigningKeyFile reads the signing key from a file (takes precedence).
+	SigningKeyFile string `yaml:"signing_key_file"`
+	// TokenTTL is the default lifetime of a minted token (default 30s). Operators
+	// run `yp bootstrap create-token` on a seed to mint one within this window.
+	TokenTTL Duration `yaml:"token_ttl"`
+	// AllowSeedJoin permits a caller to bootstrap as a SEED (join the registry
+	// tier). HIGH RISK — a rogue seed serves/harvests the registry. Default false:
+	// only agent configs are served. Even when true, a new seed still needs valid
+	// credentials and to be listed in peers; bootstrap alone grants no trust.
+	AllowSeedJoin bool `yaml:"allow_seed_join"`
+	// AdvertiseSeeds is the seed list written into served configs (the reachable
+	// seed addresses). Falls back to cluster.seeds when empty.
+	AdvertiseSeeds []string `yaml:"advertise_seeds"`
+	// RateLimit caps bootstrap requests-per-second per client (default 10).
+	RateLimit int `yaml:"rate_limit"`
 }
 
 // Federation configures cross-DC lookups (?dc / .dc.consul). Disabled by default.
@@ -310,6 +345,12 @@ func (c *Config) applyDefaults() {
 	defaultListener(&c.Listeners.ConsulHTTP, 8500)
 	defaultListener(&c.Listeners.DNS, 8600)
 	defaultListener(&c.Listeners.Metrics, 9901)
+	if c.Bootstrap.RateLimit == 0 {
+		c.Bootstrap.RateLimit = 10
+	}
+	if c.Bootstrap.TokenTTL == 0 {
+		c.Bootstrap.TokenTTL = Duration(30 * time.Second)
+	}
 
 	if c.Cluster.Discovery != nil && c.Cluster.Discovery.UpdateInterval == 0 {
 		c.Cluster.Discovery.UpdateInterval = Duration(30 * time.Second)
@@ -395,6 +436,17 @@ func (c *Config) Validate() error {
 	}
 	if c.Listeners.Metrics.Enabled {
 		errs = append(errs, validateListener("listeners.metrics", c.Listeners.Metrics)...)
+	}
+	if c.Bootstrap.Enabled {
+		if c.Role != RoleSeed {
+			errs = append(errs, errors.New("bootstrap: only a seed may serve bootstrap"))
+		}
+		if strings.TrimSpace(c.Bootstrap.SigningKey) == "" && strings.TrimSpace(c.Bootstrap.SigningKeyFile) == "" {
+			errs = append(errs, errors.New("bootstrap: a signing_key or signing_key_file is required when bootstrap is enabled (used to sign short-lived tokens)"))
+		}
+		if len(c.Bootstrap.AdvertiseSeeds) == 0 && len(c.Cluster.Seeds) == 0 {
+			errs = append(errs, errors.New("bootstrap: advertise_seeds or cluster.seeds must be set so served configs can reach a seed"))
+		}
 	}
 
 	if d := c.Cluster.Discovery; d != nil {

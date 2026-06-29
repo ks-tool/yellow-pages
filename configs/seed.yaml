@@ -36,6 +36,20 @@ listeners:
     address: 127.0.0.1
     port: 9901
 
+# Config bootstrap (seed-only, OFF by default). SENSITIVE — see docs/bootstrap.md.
+# Registers the BootstrapService RPC on the gRPC server above (no extra port) so
+# `yp bootstrap` can fetch a generated, sanitized agent/seed config. Auth is by
+# SHORT-LIVED tokens: the config holds only a signing key (never sent on the
+# wire); mint a token on the seed with `yp bootstrap create-token`.
+# bootstrap:
+#   enabled: true
+#   signing_key_file: /etc/yp/bootstrap.key  # or signing_key: "<openssl rand -base64 48>"
+#   token_ttl: 30s                  # default lifetime of a minted token
+#   allow_seed_join: false          # default: only agent configs are served
+#   advertise_seeds:                # seeds written into the served configs
+#     - seed-a.internal:9900
+#   rate_limit: 10
+
 # Consul-compatible DNS tuning (the listener is under listeners.dns above).
 dns:
   # Served zone — replaces ".consul". Queries become "<svc>.service.<domain>".

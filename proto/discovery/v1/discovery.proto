@@ -178,3 +178,25 @@ service AgentService {
   rpc Lookup(LookupRequest) returns (LookupResponse);
   rpc Watch(WatchRequest) returns (stream WatchResponse);
 }
+
+// BootstrapService hands a generated, sanitized config to a joining node so
+// cluster configs can be refreshed from the seeds without a config-management
+// tool. It is served only by seeds (off by default), authenticated by a
+// bootstrap token in request metadata, and never returns secret material (TLS
+// keys, ACL tokens). Served on the same gRPC server as AgentService.
+service BootstrapService {
+  // GetConfig returns a rendered config for the requested role. The bootstrap
+  // token travels in the "bootstrap-token" metadata header (TLS/mTLS recommended).
+  rpc GetConfig(GetConfigRequest) returns (GetConfigResponse);
+}
+
+message GetConfigRequest {
+  // role is "agent" or "seed" (default "agent"). "seed" requires the cluster to
+  // have allow_seed_join enabled, else PermissionDenied.
+  string role = 1;
+}
+
+message GetConfigResponse {
+  // config is the rendered, sanitized YAML config (no TLS keys / ACL tokens).
+  bytes config = 1;
+}

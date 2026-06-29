@@ -72,6 +72,10 @@ type Options struct {
 	// external owner (e.g. the membership snapshot) drives readiness. Default
 	// false: Start marks the server SERVING immediately.
 	StartNotReady bool
+	// RegisterExtra, when set, registers additional gRPC services on the same
+	// server (e.g. the seed's BootstrapService) under the shared interceptor
+	// chain. Called once after AgentService is registered.
+	RegisterExtra func(grpc.ServiceRegistrar)
 	// Clock is the time seam used for the drain wait (defaults to System).
 	Clock clock.Clock
 	// Log is the structured logger.
@@ -108,6 +112,9 @@ func NewComponent(opts Options) *Component {
 		grpc.ChainStreamInterceptor(observability.StreamServerInterceptor(log, opts.Metrics)),
 	)
 	discoveryv1.RegisterAgentServiceServer(gs, opts.Service)
+	if opts.RegisterExtra != nil {
+		opts.RegisterExtra(gs)
+	}
 
 	hs := health.NewServer()
 	healthpb.RegisterHealthServer(gs, hs)

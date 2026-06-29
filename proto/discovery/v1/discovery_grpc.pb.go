@@ -341,3 +341,121 @@ var AgentService_ServiceDesc = grpc.ServiceDesc{
 	},
 	Metadata: "discovery/v1/discovery.proto",
 }
+
+const (
+	BootstrapService_GetConfig_FullMethodName = "/discovery.v1.BootstrapService/GetConfig"
+)
+
+// BootstrapServiceClient is the client API for BootstrapService service.
+//
+// For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
+//
+// BootstrapService hands a generated, sanitized config to a joining node so
+// cluster configs can be refreshed from the seeds without a config-management
+// tool. It is served only by seeds (off by default), authenticated by a
+// bootstrap token in request metadata, and never returns secret material (TLS
+// keys, ACL tokens). Served on the same gRPC server as AgentService.
+type BootstrapServiceClient interface {
+	// GetConfig returns a rendered config for the requested role. The bootstrap
+	// token travels in the "bootstrap-token" metadata header (TLS/mTLS recommended).
+	GetConfig(ctx context.Context, in *GetConfigRequest, opts ...grpc.CallOption) (*GetConfigResponse, error)
+}
+
+type bootstrapServiceClient struct {
+	cc grpc.ClientConnInterface
+}
+
+func NewBootstrapServiceClient(cc grpc.ClientConnInterface) BootstrapServiceClient {
+	return &bootstrapServiceClient{cc}
+}
+
+func (c *bootstrapServiceClient) GetConfig(ctx context.Context, in *GetConfigRequest, opts ...grpc.CallOption) (*GetConfigResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetConfigResponse)
+	err := c.cc.Invoke(ctx, BootstrapService_GetConfig_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// BootstrapServiceServer is the server API for BootstrapService service.
+// All implementations must embed UnimplementedBootstrapServiceServer
+// for forward compatibility.
+//
+// BootstrapService hands a generated, sanitized config to a joining node so
+// cluster configs can be refreshed from the seeds without a config-management
+// tool. It is served only by seeds (off by default), authenticated by a
+// bootstrap token in request metadata, and never returns secret material (TLS
+// keys, ACL tokens). Served on the same gRPC server as AgentService.
+type BootstrapServiceServer interface {
+	// GetConfig returns a rendered config for the requested role. The bootstrap
+	// token travels in the "bootstrap-token" metadata header (TLS/mTLS recommended).
+	GetConfig(context.Context, *GetConfigRequest) (*GetConfigResponse, error)
+	mustEmbedUnimplementedBootstrapServiceServer()
+}
+
+// UnimplementedBootstrapServiceServer must be embedded to have
+// forward compatible implementations.
+//
+// NOTE: this should be embedded by value instead of pointer to avoid a nil
+// pointer dereference when methods are called.
+type UnimplementedBootstrapServiceServer struct{}
+
+func (UnimplementedBootstrapServiceServer) GetConfig(context.Context, *GetConfigRequest) (*GetConfigResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetConfig not implemented")
+}
+func (UnimplementedBootstrapServiceServer) mustEmbedUnimplementedBootstrapServiceServer() {}
+func (UnimplementedBootstrapServiceServer) testEmbeddedByValue()                          {}
+
+// UnsafeBootstrapServiceServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to BootstrapServiceServer will
+// result in compilation errors.
+type UnsafeBootstrapServiceServer interface {
+	mustEmbedUnimplementedBootstrapServiceServer()
+}
+
+func RegisterBootstrapServiceServer(s grpc.ServiceRegistrar, srv BootstrapServiceServer) {
+	// If the following call panics, it indicates UnimplementedBootstrapServiceServer was
+	// embedded by pointer and is nil.  This will cause panics if an
+	// unimplemented method is ever invoked, so we test this at initialization
+	// time to prevent it from happening at runtime later due to I/O.
+	if t, ok := srv.(interface{ testEmbeddedByValue() }); ok {
+		t.testEmbeddedByValue()
+	}
+	s.RegisterService(&BootstrapService_ServiceDesc, srv)
+}
+
+func _BootstrapService_GetConfig_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetConfigRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(BootstrapServiceServer).GetConfig(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: BootstrapService_GetConfig_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(BootstrapServiceServer).GetConfig(ctx, req.(*GetConfigRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+// BootstrapService_ServiceDesc is the grpc.ServiceDesc for BootstrapService service.
+// It's only intended for direct use with grpc.RegisterService,
+// and not to be introspected or modified (even as a copy)
+var BootstrapService_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "discovery.v1.BootstrapService",
+	HandlerType: (*BootstrapServiceServer)(nil),
+	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "GetConfig",
+			Handler:    _BootstrapService_GetConfig_Handler,
+		},
+	},
+	Streams:  []grpc.StreamDesc{},
+	Metadata: "discovery/v1/discovery.proto",
+}

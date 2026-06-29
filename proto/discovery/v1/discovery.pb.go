@@ -1221,6 +1221,97 @@ func (x *WatchResponse) GetSnapshotDone() bool {
 	return false
 }
 
+type GetConfigRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// role is "agent" or "seed" (default "agent"). "seed" requires the cluster to
+	// have allow_seed_join enabled, else PermissionDenied.
+	Role          string `protobuf:"bytes,1,opt,name=role,proto3" json:"role,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetConfigRequest) Reset() {
+	*x = GetConfigRequest{}
+	mi := &file_discovery_v1_discovery_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetConfigRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetConfigRequest) ProtoMessage() {}
+
+func (x *GetConfigRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_discovery_v1_discovery_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetConfigRequest.ProtoReflect.Descriptor instead.
+func (*GetConfigRequest) Descriptor() ([]byte, []int) {
+	return file_discovery_v1_discovery_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *GetConfigRequest) GetRole() string {
+	if x != nil {
+		return x.Role
+	}
+	return ""
+}
+
+type GetConfigResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// config is the rendered, sanitized YAML config (no TLS keys / ACL tokens).
+	Config        []byte `protobuf:"bytes,1,opt,name=config,proto3" json:"config,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetConfigResponse) Reset() {
+	*x = GetConfigResponse{}
+	mi := &file_discovery_v1_discovery_proto_msgTypes[20]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetConfigResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetConfigResponse) ProtoMessage() {}
+
+func (x *GetConfigResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_discovery_v1_discovery_proto_msgTypes[20]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetConfigResponse.ProtoReflect.Descriptor instead.
+func (*GetConfigResponse) Descriptor() ([]byte, []int) {
+	return file_discovery_v1_discovery_proto_rawDescGZIP(), []int{20}
+}
+
+func (x *GetConfigResponse) GetConfig() []byte {
+	if x != nil {
+		return x.Config
+	}
+	return nil
+}
+
 var File_discovery_v1_discovery_proto protoreflect.FileDescriptor
 
 const file_discovery_v1_discovery_proto_rawDesc = "" +
@@ -1309,7 +1400,11 @@ const file_discovery_v1_discovery_proto_rawDesc = "" +
 	"\rWatchResponse\x12/\n" +
 	"\x05event\x18\x01 \x01(\v2\x19.discovery.v1.ChangeEventR\x05event\x12\x14\n" +
 	"\x05index\x18\x02 \x01(\x04R\x05index\x12#\n" +
-	"\rsnapshot_done\x18\x03 \x01(\bR\fsnapshotDone*z\n" +
+	"\rsnapshot_done\x18\x03 \x01(\bR\fsnapshotDone\"&\n" +
+	"\x10GetConfigRequest\x12\x12\n" +
+	"\x04role\x18\x01 \x01(\tR\x04role\"+\n" +
+	"\x11GetConfigResponse\x12\x16\n" +
+	"\x06config\x18\x01 \x01(\fR\x06config*z\n" +
 	"\vHealthState\x12\x1c\n" +
 	"\x18HEALTH_STATE_UNSPECIFIED\x10\x00\x12\x18\n" +
 	"\x14HEALTH_STATE_PASSING\x10\x01\x12\x18\n" +
@@ -1327,7 +1422,9 @@ const file_discovery_v1_discovery_proto_rawDesc = "" +
 	"Deregister\x12\x1f.discovery.v1.DeregisterRequest\x1a .discovery.v1.DeregisterResponse\x12d\n" +
 	"\x11DeregisterService\x12&.discovery.v1.DeregisterServiceRequest\x1a'.discovery.v1.DeregisterServiceResponse\x12C\n" +
 	"\x06Lookup\x12\x1b.discovery.v1.LookupRequest\x1a\x1c.discovery.v1.LookupResponse\x12B\n" +
-	"\x05Watch\x12\x1a.discovery.v1.WatchRequest\x1a\x1b.discovery.v1.WatchResponse0\x01B@Z>github.com/ks-tool/yellow-pages/proto/discovery/v1;discoveryv1b\x06proto3"
+	"\x05Watch\x12\x1a.discovery.v1.WatchRequest\x1a\x1b.discovery.v1.WatchResponse0\x012`\n" +
+	"\x10BootstrapService\x12L\n" +
+	"\tGetConfig\x12\x1e.discovery.v1.GetConfigRequest\x1a\x1f.discovery.v1.GetConfigResponseB@Z>github.com/ks-tool/yellow-pages/proto/discovery/v1;discoveryv1b\x06proto3"
 
 var (
 	file_discovery_v1_discovery_proto_rawDescOnce sync.Once
@@ -1342,7 +1439,7 @@ func file_discovery_v1_discovery_proto_rawDescGZIP() []byte {
 }
 
 var file_discovery_v1_discovery_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_discovery_v1_discovery_proto_msgTypes = make([]protoimpl.MessageInfo, 22)
+var file_discovery_v1_discovery_proto_msgTypes = make([]protoimpl.MessageInfo, 24)
 var file_discovery_v1_discovery_proto_goTypes = []any{
 	(HealthState)(0),                  // 0: discovery.v1.HealthState
 	(ChangeType)(0),                   // 1: discovery.v1.ChangeType
@@ -1365,14 +1462,16 @@ var file_discovery_v1_discovery_proto_goTypes = []any{
 	(*LookupResponse)(nil),            // 18: discovery.v1.LookupResponse
 	(*WatchRequest)(nil),              // 19: discovery.v1.WatchRequest
 	(*WatchResponse)(nil),             // 20: discovery.v1.WatchResponse
-	nil,                               // 21: discovery.v1.Node.MetaEntry
-	nil,                               // 22: discovery.v1.Node.TaggedAddressesEntry
-	nil,                               // 23: discovery.v1.Service.MetaEntry
+	(*GetConfigRequest)(nil),          // 21: discovery.v1.GetConfigRequest
+	(*GetConfigResponse)(nil),         // 22: discovery.v1.GetConfigResponse
+	nil,                               // 23: discovery.v1.Node.MetaEntry
+	nil,                               // 24: discovery.v1.Node.TaggedAddressesEntry
+	nil,                               // 25: discovery.v1.Service.MetaEntry
 }
 var file_discovery_v1_discovery_proto_depIdxs = []int32{
-	21, // 0: discovery.v1.Node.meta:type_name -> discovery.v1.Node.MetaEntry
-	22, // 1: discovery.v1.Node.tagged_addresses:type_name -> discovery.v1.Node.TaggedAddressesEntry
-	23, // 2: discovery.v1.Service.meta:type_name -> discovery.v1.Service.MetaEntry
+	23, // 0: discovery.v1.Node.meta:type_name -> discovery.v1.Node.MetaEntry
+	24, // 1: discovery.v1.Node.tagged_addresses:type_name -> discovery.v1.Node.TaggedAddressesEntry
+	25, // 2: discovery.v1.Service.meta:type_name -> discovery.v1.Service.MetaEntry
 	2,  // 3: discovery.v1.Service.weights:type_name -> discovery.v1.Weights
 	3,  // 4: discovery.v1.Registration.node:type_name -> discovery.v1.Node
 	4,  // 5: discovery.v1.Registration.services:type_name -> discovery.v1.Service
@@ -1392,14 +1491,16 @@ var file_discovery_v1_discovery_proto_depIdxs = []int32{
 	15, // 19: discovery.v1.AgentService.DeregisterService:input_type -> discovery.v1.DeregisterServiceRequest
 	17, // 20: discovery.v1.AgentService.Lookup:input_type -> discovery.v1.LookupRequest
 	19, // 21: discovery.v1.AgentService.Watch:input_type -> discovery.v1.WatchRequest
-	10, // 22: discovery.v1.AgentService.Register:output_type -> discovery.v1.RegisterResponse
-	12, // 23: discovery.v1.AgentService.Renew:output_type -> discovery.v1.RenewResponse
-	14, // 24: discovery.v1.AgentService.Deregister:output_type -> discovery.v1.DeregisterResponse
-	16, // 25: discovery.v1.AgentService.DeregisterService:output_type -> discovery.v1.DeregisterServiceResponse
-	18, // 26: discovery.v1.AgentService.Lookup:output_type -> discovery.v1.LookupResponse
-	20, // 27: discovery.v1.AgentService.Watch:output_type -> discovery.v1.WatchResponse
-	22, // [22:28] is the sub-list for method output_type
-	16, // [16:22] is the sub-list for method input_type
+	21, // 22: discovery.v1.BootstrapService.GetConfig:input_type -> discovery.v1.GetConfigRequest
+	10, // 23: discovery.v1.AgentService.Register:output_type -> discovery.v1.RegisterResponse
+	12, // 24: discovery.v1.AgentService.Renew:output_type -> discovery.v1.RenewResponse
+	14, // 25: discovery.v1.AgentService.Deregister:output_type -> discovery.v1.DeregisterResponse
+	16, // 26: discovery.v1.AgentService.DeregisterService:output_type -> discovery.v1.DeregisterServiceResponse
+	18, // 27: discovery.v1.AgentService.Lookup:output_type -> discovery.v1.LookupResponse
+	20, // 28: discovery.v1.AgentService.Watch:output_type -> discovery.v1.WatchResponse
+	22, // 29: discovery.v1.BootstrapService.GetConfig:output_type -> discovery.v1.GetConfigResponse
+	23, // [23:30] is the sub-list for method output_type
+	16, // [16:23] is the sub-list for method input_type
 	16, // [16:16] is the sub-list for extension type_name
 	16, // [16:16] is the sub-list for extension extendee
 	0,  // [0:16] is the sub-list for field type_name
@@ -1416,9 +1517,9 @@ func file_discovery_v1_discovery_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_discovery_v1_discovery_proto_rawDesc), len(file_discovery_v1_discovery_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   22,
+			NumMessages:   24,
 			NumExtensions: 0,
-			NumServices:   1,
+			NumServices:   2,
 		},
 		GoTypes:           file_discovery_v1_discovery_proto_goTypes,
 		DependencyIndexes: file_discovery_v1_discovery_proto_depIdxs,
