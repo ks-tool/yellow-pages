@@ -47,10 +47,10 @@ listeners:
 	if cfg.Datacenter != "dc1" {
 		t.Errorf("Datacenter default = %q, want dc1", cfg.Datacenter)
 	}
-	if cfg.TTL.Duration() != 30*time.Second {
+	if cfg.TTL != 30*time.Second {
 		t.Errorf("TTL default = %s, want 30s", cfg.TTL)
 	}
-	if cfg.HeartbeatInterval.Duration() != 10*time.Second {
+	if cfg.HeartbeatInterval != 10*time.Second {
 		t.Errorf("HeartbeatInterval default = %s, want 10s", cfg.HeartbeatInterval)
 	}
 	if !cfg.Listeners.GRPC.Enabled {
@@ -75,7 +75,7 @@ func TestParse_JSONIsAccepted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Parse JSON: %v", err)
 	}
-	if cfg.TTL.Duration() != 45*time.Second {
+	if cfg.TTL != 45*time.Second {
 		t.Errorf("TTL = %s, want 45s", cfg.TTL)
 	}
 }
@@ -217,7 +217,7 @@ cluster:
 	if cfg.Role != RoleAgent {
 		t.Errorf("Role = %q, want agent", cfg.Role)
 	}
-	if cfg.ShutdownTimeout.Duration() != 15*time.Second {
+	if cfg.ShutdownTimeout != 15*time.Second {
 		t.Errorf("ShutdownTimeout default = %s, want 15s", cfg.ShutdownTimeout)
 	}
 }

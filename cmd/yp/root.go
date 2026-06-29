@@ -124,7 +124,7 @@ func newRootCmd() *cobra.Command {
 			application := app.New(
 				app.WithLogger(logger),
 				app.WithClock(clk),
-				app.WithShutdownTimeout(cfg.ShutdownTimeout.Duration()),
+				app.WithShutdownTimeout(cfg.ShutdownTimeout),
 				app.WithComponents(components...),
 			)
 			return application.Run(cmd.Context())
@@ -230,7 +230,7 @@ func buildComponents(cfg *config.Config, metrics *observability.Prometheus, clk 
 		watcher := watch.New(0, clk)
 		st := store.NewMemory(store.Options{
 			Clock:       clk,
-			DefaultTTL:  cfg.TTL.Duration(),
+			DefaultTTL:  cfg.TTL,
 			MaxServices: cfg.MaxServices,
 			OnChange:    watcher.Notify,
 		})
@@ -262,11 +262,11 @@ func buildComponents(cfg *config.Config, metrics *observability.Prometheus, clk 
 		})
 		components = append(components,
 			seedServer,
-			store.NewGCLoop(st, cfg.HeartbeatInterval.Duration(), clk, logger).
+			store.NewGCLoop(st, cfg.HeartbeatInterval, clk, logger).
 				WithReapHook(func(removed, size int) { prop.AddEvictions(removed); prop.SetRegistrySize(size) }),
 		)
 		if gateReadiness {
-			peers, err := seedclient.New(cfg.Membership.Peers, transport.New(sec.creds), cfg.Agent.SeedTimeout.Duration(), logger)
+			peers, err := seedclient.New(cfg.Membership.Peers, transport.New(sec.creds), cfg.Agent.SeedTimeout, logger)
 			if err != nil {
 				return nil, fmt.Errorf("membership: dial peers: %w", err)
 			}
@@ -274,7 +274,7 @@ func buildComponents(cfg *config.Config, metrics *observability.Prometheus, clk 
 				Self:     cfg.Listeners.GRPC.Addr(),
 				Peers:    peers,
 				Store:    st,
-				Interval: cfg.Membership.SyncInterval.Duration(),
+				Interval: cfg.Membership.SyncInterval,
 				Clock:    clk,
 				Gate:     seedServer.Readiness(),
 				Prop:     prop,
@@ -297,7 +297,7 @@ func buildComponents(cfg *config.Config, metrics *observability.Prometheus, clk 
 		if len(seeds) == 0 {
 			return nil, fmt.Errorf("agent: no seeds resolved (configure cluster.seeds or cluster.discovery)")
 		}
-		client, err := seedclient.New(seeds, transport.New(sec.creds), cfg.Agent.SeedTimeout.Duration(), logger)
+		client, err := seedclient.New(seeds, transport.New(sec.creds), cfg.Agent.SeedTimeout, logger)
 		if err != nil {
 			return nil, err
 		}
@@ -310,7 +310,7 @@ func buildComponents(cfg *config.Config, metrics *observability.Prometheus, clk 
 		}
 		agentWatcher := watch.New(watch.LoadBase(cfg.DataDir), clk)
 		cache := seedclient.NewCache(client, seedclient.CacheOptions{
-			MaxAge:   cfg.Agent.CacheMaxAge.Duration(),
+			MaxAge:   cfg.Agent.CacheMaxAge,
 			Clock:    clk,
 			Prop:     prop,
 			OnChange: func(name string) { agentWatcher.NotifyNames(name) },
@@ -319,7 +319,7 @@ func buildComponents(cfg *config.Config, metrics *observability.Prometheus, clk 
 		var fedRouter seedclient.Router
 		if cfg.Federation.Enabled {
 			pool, err := federation.NewPool(cfg.Datacenter, cfg.Federation.MaxHops, cfg.Federation.Datacenters,
-				transport.New(sec.creds), cfg.Agent.SeedTimeout.Duration(), logger)
+				transport.New(sec.creds), cfg.Agent.SeedTimeout, logger)
 			if err != nil {
 				return nil, err
 			}
@@ -345,7 +345,7 @@ func buildComponents(cfg *config.Config, metrics *observability.Prometheus, clk 
 			Transport:   transport.New(sec.creds),
 			Metrics:     metrics,
 			Identity:    sec.identity,
-			DrainWindow: cfg.Agent.DrainWindow.Duration(),
+			DrainWindow: cfg.Agent.DrainWindow,
 			Clock:       clk,
 			Log:         logger,
 		})
@@ -355,10 +355,10 @@ func buildComponents(cfg *config.Config, metrics *observability.Prometheus, clk 
 		components = append(components,
 			seedclient.NewDeregistrar(client, node.ID, logger),
 			grpcComp,
-			seedclient.NewReadinessProbe(client, grpcComp.Readiness(), cfg.Agent.ReadyMinSeeds, cfg.HeartbeatInterval.Duration(), clk, logger),
-			seedclient.NewRenewLoop(proxy, cfg.HeartbeatInterval.Duration(), clk, logger),
-			seedclient.NewRefreshLoop(cache, cfg.Agent.CacheMaxAge.Duration(), clk, logger),
-			watch.NewFlusher(agentWatcher, cfg.DataDir, cfg.HeartbeatInterval.Duration(), clk, logger),
+			seedclient.NewReadinessProbe(client, grpcComp.Readiness(), cfg.Agent.ReadyMinSeeds, cfg.HeartbeatInterval, clk, logger),
+			seedclient.NewRenewLoop(proxy, cfg.HeartbeatInterval, clk, logger),
+			seedclient.NewRefreshLoop(cache, cfg.Agent.CacheMaxAge, clk, logger),
+			watch.NewFlusher(agentWatcher, cfg.DataDir, cfg.HeartbeatInterval, clk, logger),
 		)
 		if c := consulComponent(cfg, proxy, node, seeds, agentWatcher, sec, prop, proxy, nil, logger); c != nil {
 			components = append(components, c)
@@ -383,8 +383,8 @@ func dnsComponent(cfg *config.Config, reg consuldns.Resolver, prop *observabilit
 		Domain:       cfg.DNS.Domain,
 		AltDomain:    cfg.DNS.AltDomain,
 		Datacenter:   cfg.Datacenter,
-		ServiceTTL:   ttlSeconds(cfg.DNS.ServiceTTL.Duration()),
-		NodeTTL:      ttlSeconds(cfg.DNS.NodeTTL.Duration()),
+		ServiceTTL:   ttlSeconds(cfg.DNS.ServiceTTL),
+		NodeTTL:      ttlSeconds(cfg.DNS.NodeTTL),
 		OnlyPassing:  cfg.DNS.OnlyPassing,
 		ARecordLimit: cfg.DNS.ARecordLimit,
 		Truncate:     cfg.DNS.EnableTruncate,

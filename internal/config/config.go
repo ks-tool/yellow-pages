@@ -79,11 +79,11 @@ type Config struct {
 	// unlimited; read+write DoS guard).
 	ConsulRateLimit int `yaml:"consul_rate_limit"`
 	// TTL is the per-service lease/tombstone window. Default 30s.
-	TTL Duration `yaml:"ttl"`
+	TTL time.Duration `yaml:"ttl"`
 	// HeartbeatInterval is how often the agent renews leases. Default 10s.
-	HeartbeatInterval Duration `yaml:"heartbeat_interval"`
+	HeartbeatInterval time.Duration `yaml:"heartbeat_interval"`
 	// ShutdownTimeout bounds graceful shutdown. Default 15s.
-	ShutdownTimeout Duration `yaml:"shutdown_timeout"`
+	ShutdownTimeout time.Duration `yaml:"shutdown_timeout"`
 
 	// TLS configures transport security (insecure trusted-L3 by default).
 	TLS TLS `yaml:"tls"`
@@ -121,7 +121,7 @@ type Bootstrap struct {
 	SigningKeyFile string `yaml:"signing_key_file"`
 	// TokenTTL is the default lifetime of a minted token (default 30s). Operators
 	// run `yp bootstrap create-token` on a seed to mint one within this window.
-	TokenTTL Duration `yaml:"token_ttl"`
+	TokenTTL time.Duration `yaml:"token_ttl"`
 	// AllowSeedJoin permits a caller to bootstrap as a SEED (join the registry
 	// tier). HIGH RISK — a rogue seed serves/harvests the registry. Default false:
 	// only agent configs are served. Even when true, a new seed still needs valid
@@ -150,7 +150,7 @@ type Membership struct {
 	// Peers are the other seeds' gRPC addresses to sync from.
 	Peers []string `yaml:"peers"`
 	// SyncInterval is the anti-entropy pull cadence. Default 30s.
-	SyncInterval Duration `yaml:"sync_interval"`
+	SyncInterval time.Duration `yaml:"sync_interval"`
 }
 
 // DNSConfig configures the Consul DNS interface (the listener address/port is
@@ -164,8 +164,8 @@ type DNSConfig struct {
 	// your own domain so existing clients keep working. Empty disables it.
 	AltDomain string `yaml:"alt_domain"`
 	// ServiceTTL / NodeTTL are the record TTLs in seconds (default 0).
-	ServiceTTL Duration `yaml:"service_ttl"`
-	NodeTTL    Duration `yaml:"node_ttl"`
+	ServiceTTL time.Duration `yaml:"service_ttl"`
+	NodeTTL    time.Duration `yaml:"node_ttl"`
 	// OnlyPassing drops warning instances too (default keeps warning as passing).
 	OnlyPassing bool `yaml:"only_passing"`
 	// ARecordLimit caps A/AAAA records per answer (0 = no limit).
@@ -182,7 +182,7 @@ type DNSConfig struct {
 // Agent tunes the agent role's seed fan-out, readiness gate and drain sequence.
 type Agent struct {
 	// SeedTimeout bounds a single RPC to one seed during fan-out. Default 3s.
-	SeedTimeout Duration `yaml:"seed_timeout"`
+	SeedTimeout time.Duration `yaml:"seed_timeout"`
 	// WriteQuorum is the minimum number of seeds a write must reach to be
 	// considered successful (k-of-N). Default 1.
 	WriteQuorum int `yaml:"write_quorum"`
@@ -191,10 +191,10 @@ type Agent struct {
 	ReadyMinSeeds int `yaml:"ready_min_seeds"`
 	// DrainWindow is the lame-duck window: after readiness goes NOT_SERVING the
 	// agent waits this long before it stops accepting and deregisters. Default 5s.
-	DrainWindow Duration `yaml:"drain_window"`
+	DrainWindow time.Duration `yaml:"drain_window"`
 	// CacheMaxAge bounds how stale a local read may be before it refetches from
 	// the seeds; the cache refresh loop also runs at this cadence. Default 5s.
-	CacheMaxAge Duration `yaml:"cache_max_age"`
+	CacheMaxAge time.Duration `yaml:"cache_max_age"`
 }
 
 // TLS configures TLS/mTLS transport security, off by default. Enabling it (and
@@ -241,7 +241,7 @@ type Discovery struct {
 	// Name is the plugin executable name/path (required when discovery is set).
 	Name string `yaml:"name"`
 	// UpdateInterval is how often the plugin is re-run. Default 30s.
-	UpdateInterval Duration `yaml:"update_interval"`
+	UpdateInterval time.Duration `yaml:"update_interval"`
 	// Options are passed to the plugin as JSON via an environment variable.
 	Options map[string]any `yaml:"options"`
 }
@@ -324,19 +324,19 @@ func (c *Config) applyDefaults() {
 		c.Datacenter = "dc1"
 	}
 	if c.TTL == 0 {
-		c.TTL = Duration(30 * time.Second)
+		c.TTL = time.Duration(30 * time.Second)
 	}
 	if c.HeartbeatInterval == 0 {
-		c.HeartbeatInterval = Duration(10 * time.Second)
+		c.HeartbeatInterval = time.Duration(10 * time.Second)
 	}
 	if c.ShutdownTimeout == 0 {
-		c.ShutdownTimeout = Duration(15 * time.Second)
+		c.ShutdownTimeout = time.Duration(15 * time.Second)
 	}
 	if c.Federation.MaxHops == 0 {
 		c.Federation.MaxHops = 1
 	}
 	if c.Membership.SyncInterval == 0 {
-		c.Membership.SyncInterval = Duration(30 * time.Second)
+		c.Membership.SyncInterval = time.Duration(30 * time.Second)
 	}
 
 	// The native gRPC API is the core surface and is always served.
@@ -349,11 +349,11 @@ func (c *Config) applyDefaults() {
 		c.Bootstrap.RateLimit = 10
 	}
 	if c.Bootstrap.TokenTTL == 0 {
-		c.Bootstrap.TokenTTL = Duration(30 * time.Second)
+		c.Bootstrap.TokenTTL = time.Duration(30 * time.Second)
 	}
 
 	if c.Cluster.Discovery != nil && c.Cluster.Discovery.UpdateInterval == 0 {
-		c.Cluster.Discovery.UpdateInterval = Duration(30 * time.Second)
+		c.Cluster.Discovery.UpdateInterval = time.Duration(30 * time.Second)
 	}
 
 	if c.ACL.Mode == "" {
@@ -361,7 +361,7 @@ func (c *Config) applyDefaults() {
 	}
 
 	if c.Agent.SeedTimeout == 0 {
-		c.Agent.SeedTimeout = Duration(3 * time.Second)
+		c.Agent.SeedTimeout = time.Duration(3 * time.Second)
 	}
 	if c.Agent.WriteQuorum == 0 {
 		c.Agent.WriteQuorum = 1
@@ -370,10 +370,10 @@ func (c *Config) applyDefaults() {
 		c.Agent.ReadyMinSeeds = 1
 	}
 	if c.Agent.DrainWindow == 0 {
-		c.Agent.DrainWindow = Duration(5 * time.Second)
+		c.Agent.DrainWindow = time.Duration(5 * time.Second)
 	}
 	if c.Agent.CacheMaxAge == 0 {
-		c.Agent.CacheMaxAge = Duration(5 * time.Second)
+		c.Agent.CacheMaxAge = time.Duration(5 * time.Second)
 	}
 
 	if c.DNS.Domain == "" {

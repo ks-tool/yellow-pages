@@ -144,7 +144,7 @@ func newCreateTokenCmd() *cobra.Command {
 				return fmt.Errorf("bootstrap.signing_key or signing_key_file is required")
 			}
 			if ttl <= 0 {
-				ttl = cfg.Bootstrap.TokenTTL.Duration()
+				ttl = cfg.Bootstrap.TokenTTL
 			}
 			token, err := bootstrap.MintToken(key, ttl, time.Now())
 			if err != nil {

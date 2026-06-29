@@ -24,6 +24,7 @@ package bootstrap
 
 import (
 	"fmt"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -144,7 +145,7 @@ func Render(cfg *config.Config, role config.Role, seeds []string) ([]byte, error
 	return append([]byte(renderHeader), body...), nil
 }
 
-func durStr(d config.Duration) string {
+func durStr(d time.Duration) string {
 	if d == 0 {
 		return ""
 	}
