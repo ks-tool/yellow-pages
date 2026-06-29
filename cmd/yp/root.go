@@ -369,6 +369,7 @@ func dnsComponent(cfg *config.Config, reg consuldns.Resolver, prop *observabilit
 	}
 	handler := consuldns.NewHandler(reg, consuldns.Config{
 		Domain:       cfg.DNS.Domain,
+		AltDomain:    cfg.DNS.AltDomain,
 		Datacenter:   cfg.Datacenter,
 		ServiceTTL:   ttlSeconds(cfg.DNS.ServiceTTL.Duration()),
 		NodeTTL:      ttlSeconds(cfg.DNS.NodeTTL.Duration()),

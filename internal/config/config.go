@@ -122,7 +122,12 @@ type Membership struct {
 // configured under listeners.dns).
 type DNSConfig struct {
 	// Domain is the served zone (default "consul."; a trailing dot is enforced).
+	// Set it to serve your own zone instead of ".consul" (e.g. "mycorp.").
 	Domain string `yaml:"domain"`
+	// AltDomain is an optional SECOND served zone, answered alongside Domain
+	// (Consul's alt_domain). Useful during a cutover: serve both ".consul" and
+	// your own domain so existing clients keep working. Empty disables it.
+	AltDomain string `yaml:"alt_domain"`
 	// ServiceTTL / NodeTTL are the record TTLs in seconds (default 0).
 	ServiceTTL Duration `yaml:"service_ttl"`
 	NodeTTL    Duration `yaml:"node_ttl"`
@@ -334,6 +339,9 @@ func (c *Config) applyDefaults() {
 		c.DNS.Domain = "consul."
 	} else if !strings.HasSuffix(c.DNS.Domain, ".") {
 		c.DNS.Domain += "."
+	}
+	if c.DNS.AltDomain != "" && !strings.HasSuffix(c.DNS.AltDomain, ".") {
+		c.DNS.AltDomain += "."
 	}
 	// Truncation defaults on (amplification safety); it is forced rather than
 	// configurable-off.

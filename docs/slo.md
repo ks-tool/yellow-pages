@@ -11,15 +11,15 @@ the SLOs make them enforceable. All series are on `/metrics` (default :9901).
 
 ## SLIs → SLOs
 
-| SLI | Metric | SLO |
-|---|---|---|
-| register-to-visible | `yp_propagation_register_to_visible_seconds` (histogram) | p99 < 3 × `heartbeat_interval` |
-| deregister-to-removed | `yp_propagation_deregister_to_removed_seconds` | p99 < `ttl` + 3 × `heartbeat_interval` |
-| read-cache staleness | `yp_agent_cache_age_seconds` (gauge) | < `agent.cache_max_age` |
-| seed clock skew | `yp_agent_seed_clock_skew_seconds` | p99 < 1s (NTP precondition) |
-| per-seed divergence | `yp_agent_seed_divergence` (gauge) | steady-state 0 |
-| per-seed fan-out success | `yp_agent_seed_fanout_total{result}` | success ratio > 0.99 |
-| read-path availability | `yp_rpc_requests_total{method="…/Lookup",code}` | error ratio < 0.1% |
+| SLI                      | Metric                                                   | SLO                                    |
+|--------------------------|----------------------------------------------------------|----------------------------------------|
+| register-to-visible      | `yp_propagation_register_to_visible_seconds` (histogram) | p99 < 3 × `heartbeat_interval`         |
+| deregister-to-removed    | `yp_propagation_deregister_to_removed_seconds`           | p99 < `ttl` + 3 × `heartbeat_interval` |
+| read-cache staleness     | `yp_agent_cache_age_seconds` (gauge)                     | < `agent.cache_max_age`                |
+| seed clock skew          | `yp_agent_seed_clock_skew_seconds`                       | p99 < 1s (NTP precondition)            |
+| per-seed divergence      | `yp_agent_seed_divergence` (gauge)                       | steady-state 0                         |
+| per-seed fan-out success | `yp_agent_seed_fanout_total{result}`                     | success ratio > 0.99                   |
+| read-path availability   | `yp_rpc_requests_total{method="…/Lookup",code}`          | error ratio < 0.1%                     |
 
 ## Supporting series
 

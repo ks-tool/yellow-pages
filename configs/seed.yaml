@@ -35,3 +35,13 @@ listeners:
     enabled: true
     address: 127.0.0.1
     port: 9901
+
+# Consul-compatible DNS tuning (the listener is under listeners.dns above).
+dns:
+  # Served zone — replaces ".consul". Queries become "<svc>.service.<domain>".
+  # Default: consul.
+  domain: consul.
+  # Optional SECOND zone answered alongside `domain` (Consul's alt_domain).
+  # Handy during a cutover: keep ".consul" working while rolling out your own.
+  # Leave empty to disable. Example: mycorp.
+  # alt_domain: mycorp.

@@ -41,6 +41,7 @@ type Resolver interface {
 // Config configures the DNS handler.
 type Config struct {
 	Domain       string // served zone, trailing dot (e.g. "consul.")
+	AltDomain    string // optional second served zone (e.g. "mycorp.") — empty disables
 	Datacenter   string // local datacenter (also the dc1 alias target)
 	ServiceTTL   uint32
 	NodeTTL      uint32
@@ -68,7 +69,27 @@ func NewHandler(resolver Resolver, cfg Config, prop *observability.Propagation, 
 	if !strings.HasSuffix(cfg.Domain, ".") {
 		cfg.Domain += "."
 	}
+	if cfg.AltDomain != "" && !strings.HasSuffix(cfg.AltDomain, ".") {
+		cfg.AltDomain += "."
+	}
 	return &Handler{resolver: resolver, cfg: cfg, prop: prop, rrl: newRateLimiter(cfg.RateLimit), log: log}
+}
+
+// domainFor returns the served zone (primary or alt) that name falls under, with
+// its trailing dot, and whether any matched. Response records (SOA/NS/SRV
+// targets) are then rendered under the SAME zone the query arrived on.
+func (h *Handler) domainFor(name string) (string, bool) {
+	n := strings.ToLower(strings.TrimSuffix(name, "."))
+	for _, d := range []string{h.cfg.Domain, h.cfg.AltDomain} {
+		if d == "" {
+			continue
+		}
+		base := strings.ToLower(strings.TrimSuffix(d, "."))
+		if n == base || strings.HasSuffix(n, "."+base) {
+			return d, true
+		}
+	}
+	return "", false
 }
 
 // ServeDNS implements dns.Handler.
@@ -97,18 +118,25 @@ func (h *Handler) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 }
 
 func (h *Handler) answer(resp *dns.Msg, q dns.Question) {
-	switch q.Qtype {
-	case dns.TypeSOA:
-		resp.Answer = append(resp.Answer, h.soa())
-		return
-	case dns.TypeNS:
-		resp.Answer = append(resp.Answer, h.ns(q.Name))
+	dom, ok := h.domainFor(q.Name)
+	if !ok {
+		// Outside every served zone: NXDOMAIN with the primary zone's SOA.
+		h.nxdomain(resp, h.cfg.Domain)
 		return
 	}
 
-	pq := parseName(q.Name, h.cfg.Domain)
+	switch q.Qtype {
+	case dns.TypeSOA:
+		resp.Answer = append(resp.Answer, h.soa(dom))
+		return
+	case dns.TypeNS:
+		resp.Answer = append(resp.Answer, h.ns(q.Name, dom))
+		return
+	}
+
+	pq := parseName(q.Name, dom)
 	if pq.kind == kindUnknown {
-		h.nxdomain(resp, q.Name)
+		h.nxdomain(resp, dom)
 		return
 	}
 
@@ -126,31 +154,31 @@ func (h *Handler) answer(resp *dns.Msg, q dns.Question) {
 		entries = filterNode(entries, pq.node)
 	}
 	if len(entries) == 0 {
-		h.nxdomain(resp, q.Name) // name does not exist
+		h.nxdomain(resp, dom) // name does not exist
 		return
 	}
 
 	healthy := health.Filter(entries, health.FilterOptions{OnlyPassing: true})
 	if len(healthy) == 0 {
 		// Exists but nothing healthy: NOERROR with empty answer + SOA authority.
-		resp.Ns = append(resp.Ns, h.soa())
+		resp.Ns = append(resp.Ns, h.soa(dom))
 		return
 	}
 
 	if pq.kind == kindNode {
-		h.renderNode(resp, q, healthy[0])
+		h.renderNode(resp, q, healthy[0], dom)
 		return
 	}
-	h.renderService(resp, q, healthy, dc)
+	h.renderService(resp, q, healthy, dc, dom)
 }
 
-func (h *Handler) renderService(resp *dns.Msg, q dns.Question, entries []model.ServiceEntry, dc string) {
+func (h *Handler) renderService(resp *dns.Msg, q dns.Question, entries []model.ServiceEntry, dc, dom string) {
 	rand.Shuffle(len(entries), func(i, j int) { entries[i], entries[j] = entries[j], entries[i] })
 
 	switch q.Qtype {
 	case dns.TypeSRV:
 		for _, e := range entries {
-			target, ip := h.srvTarget(e, dc)
+			target, ip := h.srvTarget(e, dc, dom)
 			resp.Answer = append(resp.Answer, &dns.SRV{
 				Hdr:      dns.RR_Header{Name: q.Name, Rrtype: dns.TypeSRV, Class: dns.ClassINET, Ttl: h.cfg.ServiceTTL},
 				Priority: 1, Weight: weight16(e.Service.Weights.OrDefault().Passing), Port: e.Service.Port, Target: target,
@@ -165,7 +193,7 @@ func (h *Handler) renderService(resp *dns.Msg, q dns.Question, entries []model.S
 		h.appendAddresses(resp, q, entries, false)
 	}
 	if len(resp.Answer) == 0 {
-		resp.Ns = append(resp.Ns, h.soa())
+		resp.Ns = append(resp.Ns, h.soa(dom))
 	}
 }
 
@@ -190,7 +218,7 @@ func (h *Handler) appendAddresses(resp *dns.Msg, q dns.Question, entries []model
 	}
 }
 
-func (h *Handler) renderNode(resp *dns.Msg, q dns.Question, e model.ServiceEntry) {
+func (h *Handler) renderNode(resp *dns.Msg, q dns.Question, e model.ServiceEntry, dom string) {
 	ip := net.ParseIP(e.Node.Address)
 	switch q.Qtype {
 	case dns.TypeTXT:
@@ -201,20 +229,21 @@ func (h *Handler) renderNode(resp *dns.Msg, q dns.Question, e model.ServiceEntry
 		}
 	}
 	if len(resp.Answer) == 0 {
-		resp.Ns = append(resp.Ns, h.soa())
+		resp.Ns = append(resp.Ns, h.soa(dom))
 	}
 }
 
 // srvTarget returns the SRV target and the IP it must resolve to (always the
 // service address). It is <node>.node.<dc> when the instance inherits the node
-// address, else a synthetic <hexip>.addr.<dc>.
-func (h *Handler) srvTarget(e model.ServiceEntry, dc string) (string, net.IP) {
+// address, else a synthetic <hexip>.addr.<dc>. The target is rendered under dom
+// (the zone the query arrived on) so an alt-domain query stays self-consistent.
+func (h *Handler) srvTarget(e model.ServiceEntry, dc, dom string) (string, net.IP) {
 	addr := serviceAddr(e)
 	ip := net.ParseIP(addr)
 	if addr == e.Node.Address || ip == nil {
-		return nodeName(e.Node) + ".node." + dc + "." + h.cfg.Domain, net.ParseIP(e.Node.Address)
+		return nodeName(e.Node) + ".node." + dc + "." + dom, net.ParseIP(e.Node.Address)
 	}
-	return hexIP(ip) + ".addr." + dc + "." + h.cfg.Domain, ip
+	return hexIP(ip) + ".addr." + dc + "." + dom, ip
 }
 
 func (h *Handler) addressRR(name string, ip net.IP, ttl uint32) dns.RR {
@@ -230,23 +259,23 @@ func (h *Handler) addressRR(name string, ip net.IP, ttl uint32) dns.RR {
 	return &dns.AAAA{Hdr: hdr, AAAA: ip.To16()}
 }
 
-func (h *Handler) nxdomain(resp *dns.Msg, _ string) {
+func (h *Handler) nxdomain(resp *dns.Msg, dom string) {
 	resp.Rcode = dns.RcodeNameError
-	resp.Ns = append(resp.Ns, h.soa())
+	resp.Ns = append(resp.Ns, h.soa(dom))
 }
 
-func (h *Handler) soa() *dns.SOA {
+func (h *Handler) soa(dom string) *dns.SOA {
 	return &dns.SOA{
-		Hdr:     dns.RR_Header{Name: h.cfg.Domain, Rrtype: dns.TypeSOA, Class: dns.ClassINET, Ttl: 0},
-		Ns:      "ns." + h.cfg.Domain,
-		Mbox:    "hostmaster." + h.cfg.Domain,
+		Hdr:     dns.RR_Header{Name: dom, Rrtype: dns.TypeSOA, Class: dns.ClassINET, Ttl: 0},
+		Ns:      "ns." + dom,
+		Mbox:    "hostmaster." + dom,
 		Serial:  1,
 		Refresh: 3600, Retry: 600, Expire: 86400, Minttl: 0,
 	}
 }
 
-func (h *Handler) ns(name string) *dns.NS {
-	return &dns.NS{Hdr: dns.RR_Header{Name: name, Rrtype: dns.TypeNS, Class: dns.ClassINET, Ttl: 0}, Ns: "ns." + h.cfg.Domain}
+func (h *Handler) ns(name, dom string) *dns.NS {
+	return &dns.NS{Hdr: dns.RR_Header{Name: name, Rrtype: dns.TypeNS, Class: dns.ClassINET, Ttl: 0}, Ns: "ns." + dom}
 }
 
 func (h *Handler) effectiveDC(dc string) string {
